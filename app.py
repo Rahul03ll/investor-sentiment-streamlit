@@ -29,27 +29,53 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+IS_DARK_MODE = st.get_option("theme.base") == "dark"
+
 # ── Custom CSS ────────────────────────────────────────────────
 st.markdown("""
 <style>
+    :root {
+        --text-primary: #0f172a;
+        --text-secondary: #334155;
+        --accent-primary: #2e75b6;
+        --accent-secondary: #1f4e79;
+        --card-bg: #f8fbff;
+        --card-border: rgba(46, 117, 182, 0.35);
+        --warning-bg: #fff8e6;
+        --warning-border: #f59e0b;
+    }
+    [data-theme="dark"] {
+        --text-primary: #e2e8f0;
+        --text-secondary: #cbd5e1;
+        --accent-primary: #60a5fa;
+        --accent-secondary: #3b82f6;
+        --card-bg: #111827;
+        --card-border: rgba(96, 165, 250, 0.55);
+        --warning-bg: #3a2f0f;
+        --warning-border: #fbbf24;
+    }
+    .block-container {
+        padding-top: 1.4rem;
+        padding-bottom: 2rem;
+    }
     .main-header {
         font-size: 2rem;
         font-weight: 700;
-        color: #1f4e79;
+        color: var(--text-primary);
         text-align: center;
         padding: 1rem 0;
-        border-bottom: 3px solid #2e75b6;
+        border-bottom: 3px solid var(--accent-primary);
         margin-bottom: 1.5rem;
     }
     .sub-header {
         font-size: 1.1rem;
-        color: #444;
+        color: var(--text-secondary);
         text-align: center;
         margin-top: -1rem;
         margin-bottom: 2rem;
     }
     .metric-card {
-        background: linear-gradient(135deg, #1f4e79, #2e75b6);
+        background: linear-gradient(135deg, var(--accent-secondary), var(--accent-primary));
         padding: 1rem;
         border-radius: 10px;
         color: white;
@@ -58,27 +84,75 @@ st.markdown("""
     .section-header {
         font-size: 1.3rem;
         font-weight: 600;
-        color: #1f4e79;
-        border-left: 4px solid #2e75b6;
+        color: var(--text-primary);
+        border-left: 4px solid var(--accent-primary);
         padding-left: 0.75rem;
         margin: 1.5rem 0 1rem 0;
     }
     .insight-box {
-        background-color: #e8f4fd;
-        border-left: 4px solid #2e75b6;
+        background-color: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-left: 4px solid var(--accent-primary);
         padding: 0.75rem 1rem;
         border-radius: 0 8px 8px 0;
         margin: 0.5rem 0;
+        color: var(--text-secondary);
     }
     .warning-box {
-        background-color: #fff3cd;
-        border-left: 4px solid #ffc107;
+        background-color: var(--warning-bg);
+        border: 1px solid rgba(245, 158, 11, 0.45);
+        border-left: 4px solid var(--warning-border);
         padding: 0.75rem 1rem;
         border-radius: 0 8px 8px 0;
         margin: 0.5rem 0;
+        color: var(--text-primary);
+    }
+    [data-testid="stSidebar"] {
+        border-right: 1px solid var(--card-border);
+    }
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] label {
+        color: var(--text-primary) !important;
+    }
+    .stButton > button {
+        border-radius: 0.6rem;
+        font-weight: 600;
+    }
+    .stSelectbox > div > div,
+    .stSlider > div,
+    .stDateInput > div {
+        border-radius: 0.6rem;
     }
 </style>
 """, unsafe_allow_html=True)
+
+def apply_plot_theme(fig, axes):
+    """Apply a consistent chart theme for light/dark modes."""
+    axes_list = axes if isinstance(axes, (list, np.ndarray)) else [axes]
+    if IS_DARK_MODE:
+        fig.patch.set_facecolor("#0f172a")
+        for ax in axes_list:
+            ax.set_facecolor("#111827")
+            ax.tick_params(colors="#e5e7eb")
+            ax.xaxis.label.set_color("#e5e7eb")
+            ax.yaxis.label.set_color("#e5e7eb")
+            ax.title.set_color("#f8fafc")
+            for spine in ax.spines.values():
+                spine.set_color("#64748b")
+            ax.grid(True, alpha=0.18, color="#64748b")
+    else:
+        fig.patch.set_facecolor("white")
+        for ax in axes_list:
+            ax.set_facecolor("#f8fafc")
+            ax.tick_params(colors="#1f2937")
+            ax.xaxis.label.set_color("#111827")
+            ax.yaxis.label.set_color("#111827")
+            ax.title.set_color("#0f172a")
+            for spine in ax.spines.values():
+                spine.set_color("#9ca3af")
+            ax.grid(True, alpha=0.18, color="#94a3b8")
+    fig.tight_layout()
 
 # ── Header ─────────────────────────────────────────────────────
 st.markdown(
@@ -133,7 +207,7 @@ with st.sidebar:
 
     st.markdown("---")
     run_button = st.button("🚀 Run Analysis", type="primary",
-                           use_container_width=True)
+                           width="stretch")
 
     st.markdown("---")
     st.markdown(
@@ -390,7 +464,7 @@ with tab1:
                  fontweight='bold')
     if show_gfc or show_covid:
         ax.legend(fontsize=9)
-    plt.tight_layout()
+    apply_plot_theme(fig, ax)
     st.pyplot(fig)
     plt.close()
 
@@ -417,7 +491,7 @@ with tab1:
         lambda p: '***' if p < 0.01 else ('**' if p < 0.05 else
                   ('*' if p < 0.10 else ''))
     )
-    st.dataframe(params_df, use_container_width=True)
+    st.dataframe(params_df, width="stretch")
     st.markdown(
         '<div class="insight-box">'
         '<b>Interpretation:</b> beta ≈ 0.99 indicates very high volatility persistence. '
@@ -454,7 +528,7 @@ with tab2:
     ax2.set_xlabel('Date')
     ax2.set_title('EGARCH Volatility', fontweight='bold')
 
-    plt.tight_layout()
+    apply_plot_theme(fig, [ax1, ax2])
     st.pyplot(fig)
     plt.close()
 
@@ -481,7 +555,7 @@ with tab2:
     ax.set_title('Investor Sentiment vs Market Volatility',
                  fontweight='bold')
     ax.legend()
-    plt.tight_layout()
+    apply_plot_theme(fig, ax)
     st.pyplot(fig)
     plt.close()
 
@@ -517,7 +591,7 @@ with tab2:
                 'P-Value': round(p_val, 6),
                 'Significant (p<0.05)': '✅ Yes' if p_val < 0.05 else '❌ No'
             })
-        st.dataframe(pd.DataFrame(gc_table), use_container_width=True)
+        st.dataframe(pd.DataFrame(gc_table), width="stretch")
         st.markdown(
             '<div class="insight-box">'
             '<b>Interpretation:</b> All lags significant (p<0.01) — '
@@ -555,7 +629,7 @@ with tab3:
     ax.set_ylabel('Conditional Volatility (%)')
     ax.set_title('Volatility During Crisis Periods', fontweight='bold')
     ax.legend(fontsize=10)
-    plt.tight_layout()
+    apply_plot_theme(fig, ax)
     st.pyplot(fig)
     plt.close()
 
@@ -580,7 +654,7 @@ with tab3:
                 'Trading Days'     : len(period_df),
             })
     if stats_rows:
-        st.dataframe(pd.DataFrame(stats_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(stats_rows), width="stretch")
 
     st.markdown(
         '<div class="insight-box">'
@@ -625,7 +699,7 @@ with tab4:
     ax.set_title('Top Feature Importances — Volatility Direction Prediction',
                  fontweight='bold')
     ax.set_xlabel('Importance Score')
-    plt.tight_layout()
+    apply_plot_theme(fig, ax)
     st.pyplot(fig)
     plt.close()
 
@@ -639,7 +713,7 @@ with tab4:
     )
     st.dataframe(
         pd.DataFrame(report_dict).T.round(4),
-        use_container_width=True
+        width="stretch"
     )
 
     st.markdown(
@@ -663,7 +737,7 @@ with tab5:
     desc_df   = data[stat_cols].describe().round(6)
     desc_df.loc['skewness'] = data[stat_cols].skew().round(6)
     desc_df.loc['kurtosis'] = data[stat_cols].kurt().round(6)
-    st.dataframe(desc_df, use_container_width=True)
+    st.dataframe(desc_df, width="stretch")
 
     # ADF Tests
     st.markdown('<div class="section-header">Stationarity Tests (ADF)</div>',
@@ -678,7 +752,7 @@ with tab5:
             'Stationary' : '✅ Yes' if adf[1] < 0.05 else '❌ No',
             'Significance': '***' if adf[1]<0.01 else ('**' if adf[1]<0.05 else '*')
         })
-    st.dataframe(pd.DataFrame(adf_rows), use_container_width=True)
+    st.dataframe(pd.DataFrame(adf_rows), width="stretch")
 
     # Distribution
     st.markdown('<div class="section-header">Return Distribution</div>',
@@ -697,7 +771,7 @@ with tab5:
     axes[1].set_xlabel('Date')
     axes[1].set_ylabel('Log Return')
 
-    plt.tight_layout()
+    apply_plot_theme(fig, axes)
     st.pyplot(fig)
     plt.close()
 
