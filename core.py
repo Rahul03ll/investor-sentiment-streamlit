@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf
-from arch import arch_model
 
 
 def load_stock_data(ticker, start, end):
+    import yfinance as yf
+
     df = yf.download(ticker, start=start, end=end, progress=False)
     if df.empty:
         return df
@@ -112,6 +112,8 @@ def load_trends_data(start, end):
 
 
 def fit_egarch_model(returns_array, sentiment_array, p, q):
+    from arch import arch_model
+
     returns_pct = returns_array * 100
     model = arch_model(
         returns_pct,
