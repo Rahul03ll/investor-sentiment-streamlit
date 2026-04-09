@@ -34,26 +34,6 @@ IS_DARK_MODE = st.get_option("theme.base") == "dark"
 # ── Custom CSS ────────────────────────────────────────────────
 st.markdown("""
 <style>
-    :root {
-        --text-primary: #0f172a;
-        --text-secondary: #334155;
-        --accent-primary: #2e75b6;
-        --accent-secondary: #1f4e79;
-        --card-bg: #f8fbff;
-        --card-border: rgba(46, 117, 182, 0.35);
-        --warning-bg: #fff8e6;
-        --warning-border: #f59e0b;
-    }
-    [data-theme="dark"] {
-        --text-primary: #e2e8f0;
-        --text-secondary: #cbd5e1;
-        --accent-primary: #60a5fa;
-        --accent-secondary: #3b82f6;
-        --card-bg: #111827;
-        --card-border: rgba(96, 165, 250, 0.55);
-        --warning-bg: #3a2f0f;
-        --warning-border: #fbbf24;
-    }
     .block-container {
         padding-top: 1.4rem;
         padding-bottom: 2rem;
@@ -61,21 +41,22 @@ st.markdown("""
     .main-header {
         font-size: 2rem;
         font-weight: 700;
-        color: var(--text-primary);
+        color: var(--text-color, #e5e7eb);
         text-align: center;
         padding: 1rem 0;
-        border-bottom: 3px solid var(--accent-primary);
+        border-bottom: 3px solid var(--primary-color, #60a5fa);
         margin-bottom: 1.5rem;
     }
     .sub-header {
         font-size: 1.1rem;
-        color: var(--text-secondary);
+        color: var(--text-color, #cbd5e1);
+        opacity: 0.86;
         text-align: center;
         margin-top: -1rem;
         margin-bottom: 2rem;
     }
     .metric-card {
-        background: linear-gradient(135deg, var(--accent-secondary), var(--accent-primary));
+        background: linear-gradient(135deg, #1e3a8a, var(--primary-color, #60a5fa));
         padding: 1rem;
         border-radius: 10px;
         color: white;
@@ -84,36 +65,36 @@ st.markdown("""
     .section-header {
         font-size: 1.3rem;
         font-weight: 600;
-        color: var(--text-primary);
-        border-left: 4px solid var(--accent-primary);
+        color: var(--text-color, #e5e7eb);
+        border-left: 4px solid var(--primary-color, #60a5fa);
         padding-left: 0.75rem;
         margin: 1.5rem 0 1rem 0;
     }
     .insight-box {
-        background-color: var(--card-bg);
-        border: 1px solid var(--card-border);
-        border-left: 4px solid var(--accent-primary);
+        background-color: var(--secondary-background-color, #1f2937);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        border-left: 4px solid var(--primary-color, #60a5fa);
         padding: 0.75rem 1rem;
         border-radius: 0 8px 8px 0;
         margin: 0.5rem 0;
-        color: var(--text-secondary);
+        color: var(--text-color, #e5e7eb);
     }
     .warning-box {
-        background-color: var(--warning-bg);
+        background-color: rgba(245, 158, 11, 0.18);
         border: 1px solid rgba(245, 158, 11, 0.45);
-        border-left: 4px solid var(--warning-border);
+        border-left: 4px solid #f59e0b;
         padding: 0.75rem 1rem;
         border-radius: 0 8px 8px 0;
         margin: 0.5rem 0;
-        color: var(--text-primary);
+        color: var(--text-color, #e5e7eb);
     }
     [data-testid="stSidebar"] {
-        border-right: 1px solid var(--card-border);
+        border-right: 1px solid rgba(148, 163, 184, 0.25);
     }
     [data-testid="stSidebar"] h2,
     [data-testid="stSidebar"] h3,
     [data-testid="stSidebar"] label {
-        color: var(--text-primary) !important;
+        color: var(--text-color, #e5e7eb) !important;
     }
     .stButton > button {
         border-radius: 0.6rem;
