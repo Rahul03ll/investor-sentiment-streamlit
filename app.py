@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
 import warnings
+import subprocess
+import sys
 warnings.filterwarnings('ignore')
 
 from sklearn.decomposition import PCA
@@ -35,28 +37,28 @@ IS_DARK_MODE = st.get_option("theme.base") == "dark"
 st.markdown("""
 <style>
     .block-container {
-        padding-top: 1.4rem;
+        padding-top: 1.2rem;
         padding-bottom: 2rem;
     }
     .main-header {
         font-size: 2rem;
         font-weight: 700;
-        color: var(--text-color, #e5e7eb);
+        color: var(--text-color);
         text-align: center;
         padding: 1rem 0;
-        border-bottom: 3px solid var(--primary-color, #60a5fa);
+        border-bottom: 3px solid var(--primary-color);
         margin-bottom: 1.5rem;
     }
     .sub-header {
         font-size: 1.1rem;
-        color: var(--text-color, #cbd5e1);
-        opacity: 0.86;
+        color: var(--text-color);
+        opacity: 0.78;
         text-align: center;
         margin-top: -1rem;
         margin-bottom: 2rem;
     }
     .metric-card {
-        background: linear-gradient(135deg, #1e3a8a, var(--primary-color, #60a5fa));
+        background: linear-gradient(135deg, var(--primary-color), #1d4ed8);
         padding: 1rem;
         border-radius: 10px;
         color: white;
@@ -65,40 +67,41 @@ st.markdown("""
     .section-header {
         font-size: 1.3rem;
         font-weight: 600;
-        color: var(--text-color, #e5e7eb);
-        border-left: 4px solid var(--primary-color, #60a5fa);
+        color: var(--text-color);
+        border-left: 4px solid var(--primary-color);
         padding-left: 0.75rem;
         margin: 1.5rem 0 1rem 0;
     }
     .insight-box {
-        background-color: var(--secondary-background-color, #1f2937);
-        border: 1px solid rgba(148, 163, 184, 0.35);
-        border-left: 4px solid var(--primary-color, #60a5fa);
+        background-color: var(--secondary-background-color);
+        border: 1px solid rgba(127, 127, 127, 0.25);
+        border-left: 4px solid var(--primary-color);
         padding: 0.75rem 1rem;
         border-radius: 0 8px 8px 0;
         margin: 0.5rem 0;
-        color: var(--text-color, #e5e7eb);
+        color: var(--text-color);
     }
     .warning-box {
-        background-color: rgba(245, 158, 11, 0.18);
+        background-color: rgba(245, 158, 11, 0.12);
         border: 1px solid rgba(245, 158, 11, 0.45);
         border-left: 4px solid #f59e0b;
         padding: 0.75rem 1rem;
         border-radius: 0 8px 8px 0;
         margin: 0.5rem 0;
-        color: var(--text-color, #e5e7eb);
+        color: var(--text-color);
     }
     [data-testid="stSidebar"] {
-        border-right: 1px solid rgba(148, 163, 184, 0.25);
+        border-right: 1px solid rgba(127, 127, 127, 0.2);
     }
     [data-testid="stSidebar"] h2,
     [data-testid="stSidebar"] h3,
     [data-testid="stSidebar"] label {
-        color: var(--text-color, #e5e7eb) !important;
+        color: var(--text-color) !important;
     }
     .stButton > button {
         border-radius: 0.6rem;
         font-weight: 600;
+        border: 1px solid rgba(127, 127, 127, 0.3);
     }
     .stSelectbox > div > div,
     .stSlider > div,
@@ -211,7 +214,17 @@ def load_stock_data(ticker, start, end):
 @st.cache_data(ttl=3600)
 def load_trends_data(start, end):
     try:
-        from pytrends.request import TrendReq
+        try:
+            from pytrends.request import TrendReq
+        except ModuleNotFoundError:
+            # Streamlit Cloud can occasionally miss optional deps during build.
+            # Attempt a runtime install once, then retry import.
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "pytrends==4.9.2"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            from pytrends.request import TrendReq
         # Retry network calls to reduce intermittent failures on cloud hosts.
         pytrends = TrendReq(
             hl="en-US",
