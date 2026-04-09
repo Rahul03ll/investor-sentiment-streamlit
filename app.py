@@ -9,19 +9,21 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import seaborn as sns
 import warnings
-import subprocess
-import sys
+import time
 warnings.filterwarnings('ignore')
 
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
-from arch import arch_model
 from statsmodels.tsa.stattools import adfuller, grangercausalitytests
+from core import (
+    load_stock_data,
+    load_gdelt_sentiment,
+    load_trends_data,
+    fit_egarch_model,
+)
 
 # ── Page Config ───────────────────────────────────────────────
 st.set_page_config(
@@ -190,6 +192,15 @@ with st.sidebar:
     show_covid = st.checkbox("Show COVID (2020–21)", value=True)
 
     st.markdown("---")
+    st.markdown("### Sentiment Fetch Mode")
+    sentiment_mode = st.radio(
+        "Choose speed vs coverage",
+        ["Fast", "Full"],
+        index=0,
+        help="Fast: quicker startup with fewer GDELT calls. Full: broader GDELT coverage."
+    )
+
+    st.markdown("---")
     run_button = st.button("🚀 Run Analysis", type="primary",
                            width="stretch")
 
@@ -197,67 +208,15 @@ with st.sidebar:
     st.markdown(
         "**Project:** Investor Sentiment & Volatility\n\n"
         "**Model:** EGARCH + Random Forest\n\n"
-        "**Data:** Yahoo Finance + Google Trends"
+        "**Data:** Yahoo Finance + GDELT + Google Trends"
     )
 
 # ╔══════════════════════════════════════════════════════════╗
 # ║  DATA LOADING                                           ║
 # ╚══════════════════════════════════════════════════════════╝
 
-@st.cache_data(ttl=3600)
-def load_stock_data(ticker, start, end):
-    df = yf.download(ticker, start=start, end=end, progress=False)
-    df.columns = df.columns.get_level_values(0)
-    df['returns'] = np.log(df['Close'] / df['Close'].shift(1))
-    return df.dropna()
-
-@st.cache_data(ttl=3600)
-def load_trends_data(start, end):
-    try:
-        try:
-            from pytrends.request import TrendReq
-        except ModuleNotFoundError:
-            # Streamlit Cloud can occasionally miss optional deps during build.
-            # Attempt a runtime install once, then retry import.
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "pytrends==4.9.2"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            from pytrends.request import TrendReq
-        # Retry network calls to reduce intermittent failures on cloud hosts.
-        pytrends = TrendReq(
-            hl="en-US",
-            tz=330,
-            retries=3,
-            backoff_factor=0.5,
-            timeout=(10, 25)
-        )
-        keywords = ["stock market crash", "Nifty crash", "Sensex fall"]
-        pytrends.build_payload(
-            keywords,
-            timeframe=f"{start} {end}",
-            geo="IN"
-        )
-        trends = pytrends.interest_over_time()
-        if trends is None or trends.empty:
-            return None, [], "Google Trends returned no data."
-        if 'isPartial' in trends.columns:
-            trends = trends.drop(columns=['isPartial'])
-        return trends, keywords, None
-    except Exception as exc:
-        return None, [], str(exc)
-
-@st.cache_data(ttl=3600)
-def fit_egarch_model(returns_array, sentiment_array, p, q):
-    returns_pct = returns_array * 100
-    model = arch_model(
-        returns_pct,
-        vol='EGarch',
-        p=p, q=q,
-        x=sentiment_array.reshape(-1, 1)
-    )
-    return model.fit(disp='off')
+# Core pipeline functions are imported from `core.py` for cleaner app code
+# and easier automated testing.
 
 # ── Default display before analysis runs ──────────────────
 if not run_button:
@@ -266,7 +225,7 @@ if not run_button:
     <b>👋 Welcome!</b> Configure your analysis in the sidebar and click 
     <b>Run Analysis</b> to begin.<br><br>
     This tool analyzes the relationship between <b>investor sentiment</b> 
-    (measured via Google Trends) and <b>market volatility</b> 
+    (measured via GDELT + Google Trends fallback) and <b>market volatility</b> 
     (modeled via EGARCH) in the Indian stock market.
     </div>
     """, unsafe_allow_html=True)
@@ -283,7 +242,8 @@ if not run_button:
     with col2:
         st.markdown("""
         **🧠 Sentiment Analysis**
-        - Google Trends composite index
+        - GDELT tone-based sentiment
+        - Google Trends fallback index
         - PCA dimensionality reduction
         - Sentiment-volatility relationship
         """)
@@ -314,34 +274,55 @@ except Exception as e:
     st.error(f"Failed to load stock data: {e}")
     st.stop()
 
-# ── Load Trends ───────────────────────────────────────────
-status_text.text("🔍 Fetching Google Trends sentiment data...")
+# ── Load Sentiment ────────────────────────────────────────
+status_text.text("📰 Fetching sentiment data (GDELT → Trends fallback)...")
 progress_bar.progress(25)
 
-trends, keywords, trends_error = load_trends_data(START_DATE, END_DATE)
+gdelt_sentiment, gdelt_error = load_gdelt_sentiment(
+    START_DATE, END_DATE, fast_mode=(sentiment_mode == "Fast")
+)
 
-if trends is not None and len(keywords) > 0:
-    data = data.merge(trends, left_index=True,
-                      right_index=True, how='left')
-    data[keywords] = data[keywords].ffill().bfill()
-
-    scaler = StandardScaler()
-    scaled = scaler.fit_transform(data[keywords])
-    pca    = PCA(n_components=1)
-    data['sentiment_index'] = pca.fit_transform(scaled)
-    variance_explained = pca.explained_variance_ratio_[0] * 100
+if gdelt_sentiment is not None and not gdelt_sentiment.empty:
+    data = data.merge(gdelt_sentiment, left_index=True, right_index=True, how='left')
+    data["sentiment"] = data["sentiment"].ffill().bfill()
+    data['sentiment_index'] = data['sentiment']
     has_sentiment = True
-else:
-    np.random.seed(42)
-    data['sentiment_index'] = np.random.randn(len(data)) * 0.5
-    has_sentiment = False
-    variance_explained = 0
-    error_hint = f" Reason: {trends_error}" if trends_error else ""
+    variance_explained = 100
     st.markdown(
-        '<div class="warning-box">⚠️ Google Trends unavailable. '
-        f'Using synthetic sentiment for demonstration.{error_hint}</div>',
+        '<div class="insight-box">✅ Using GDELT sentiment as primary source.</div>',
         unsafe_allow_html=True
     )
+else:
+    trends, keywords, trends_error = load_trends_data(START_DATE, END_DATE)
+
+    if trends is not None and len(keywords) > 0:
+        data = data.merge(trends, left_index=True, right_index=True, how='left')
+        data[keywords] = data[keywords].ffill().bfill()
+
+        scaler = StandardScaler()
+        scaled = scaler.fit_transform(data[keywords])
+        pca = PCA(n_components=1)
+        data['sentiment_index'] = pca.fit_transform(scaled)
+        variance_explained = pca.explained_variance_ratio_[0] * 100
+        has_sentiment = True
+        gdelt_hint = f" GDELT reason: {gdelt_error}." if gdelt_error else ""
+        st.markdown(
+            f'<div class="warning-box">⚠️ GDELT sentiment unavailable.{gdelt_hint} '
+            'Using Google Trends sentiment fallback.</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        np.random.seed(42)
+        data['sentiment_index'] = np.random.randn(len(data)) * 0.5
+        has_sentiment = False
+        variance_explained = 0
+        gdelt_hint = f" GDELT reason: {gdelt_error}." if gdelt_error else ""
+        trends_hint = f" Google Trends reason: {trends_error}." if trends_error else ""
+        st.markdown(
+            '<div class="warning-box">⚠️ Using synthetic sentiment for demonstration.'
+            f'{gdelt_hint}{trends_hint}</div>',
+            unsafe_allow_html=True
+        )
 
 # ── Fit EGARCH ────────────────────────────────────────────
 status_text.text("⚙️ Fitting EGARCH model...")
@@ -396,7 +377,7 @@ ml_acc = accuracy_score(y_test, y_pred)
 
 progress_bar.progress(100)
 status_text.text("✅ Analysis complete!")
-import time; time.sleep(0.5)
+time.sleep(0.5)
 progress_bar.empty()
 status_text.empty()
 
