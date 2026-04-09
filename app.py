@@ -153,11 +153,18 @@ def load_stock_data(ticker, start, end):
     df['returns'] = np.log(df['Close'] / df['Close'].shift(1))
     return df.dropna()
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)
 def load_trends_data(start, end):
     try:
         from pytrends.request import TrendReq
-        pytrends = TrendReq()
+        # Retry network calls to reduce intermittent failures on cloud hosts.
+        pytrends = TrendReq(
+            hl="en-US",
+            tz=330,
+            retries=3,
+            backoff_factor=0.5,
+            timeout=(10, 25)
+        )
         keywords = ["stock market crash", "Nifty crash", "Sensex fall"]
         pytrends.build_payload(
             keywords,
@@ -165,10 +172,13 @@ def load_trends_data(start, end):
             geo="IN"
         )
         trends = pytrends.interest_over_time()
-        trends = trends.drop(columns=['isPartial'])
-        return trends, keywords
-    except:
-        return None, []
+        if trends is None or trends.empty:
+            return None, [], "Google Trends returned no data."
+        if 'isPartial' in trends.columns:
+            trends = trends.drop(columns=['isPartial'])
+        return trends, keywords, None
+    except Exception as exc:
+        return None, [], str(exc)
 
 @st.cache_data(ttl=3600)
 def fit_egarch_model(returns_array, sentiment_array, p, q):
@@ -240,7 +250,7 @@ except Exception as e:
 status_text.text("🔍 Fetching Google Trends sentiment data...")
 progress_bar.progress(25)
 
-trends, keywords = load_trends_data(START_DATE, END_DATE)
+trends, keywords, trends_error = load_trends_data(START_DATE, END_DATE)
 
 if trends is not None and len(keywords) > 0:
     data = data.merge(trends, left_index=True,
@@ -258,9 +268,10 @@ else:
     data['sentiment_index'] = np.random.randn(len(data)) * 0.5
     has_sentiment = False
     variance_explained = 0
+    error_hint = f" Reason: {trends_error}" if trends_error else ""
     st.markdown(
         '<div class="warning-box">⚠️ Google Trends unavailable. '
-        'Using synthetic sentiment for demonstration.</div>',
+        f'Using synthetic sentiment for demonstration.{error_hint}</div>',
         unsafe_allow_html=True
     )
 
