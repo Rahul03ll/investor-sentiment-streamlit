@@ -283,13 +283,18 @@ sc = ax.scatter(
 plt.colorbar(sc, label='Volatility Level')
 
 # Trend line
-z = np.polyfit(data['sentiment_index'], data['volatility'], 1)
-p = np.poly1d(z)
-xline = np.linspace(data['sentiment_index'].min(),
-                    data['sentiment_index'].max(), 200)
-ax.plot(xline, p(xline),
-        color=COLORS['red'], linewidth=2,
-        linestyle='--', label=f'Trend (slope={z[0]:.3f})')
+# FIXED: Task 5 - Safe polyfit
+valid_data = data[['sentiment_index', 'volatility']].replace([np.inf, -np.inf], np.nan).dropna()
+if len(valid_data) > 2 and valid_data.nunique().min() > 1:
+    try:
+        z = np.polyfit(valid_data['sentiment_index'], valid_data['volatility'], 1, rcond=1e-10)
+        p = np.poly1d(z)
+        xline = np.linspace(valid_data['sentiment_index'].min(), valid_data['sentiment_index'].max(), 200)
+        ax.plot(xline, p(xline), color=COLORS['red'], linewidth=2, linestyle='--', label=f'Trend slope={z[0]:.3f}')
+    except Exception:
+        print("⚠️ Trend fit failed in notebook.")
+else:
+    print("⚠️ Insufficient data for trend.")
 
 ax.set_title('Investor Sentiment vs Market Volatility\n'
              'Nifty 50  |  2007–2024',

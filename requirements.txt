@@ -10,6 +10,7 @@ arch
 pytrends
 streamlit
 vaderSentiment
+feedparser
 plotly
 urllib3
 requests

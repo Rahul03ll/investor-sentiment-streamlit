@@ -1,4 +1,9 @@
+"""
+Smoke test for the full analysis pipeline.
+Uses a short date range to keep network calls fast.
+"""
 import numpy as np
+import pytest
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -8,7 +13,9 @@ from core import fit_egarch_model, load_gdelt_sentiment, load_stock_data, load_t
 def test_full_pipeline_smoke():
     data = load_stock_data("^NSEI", "2022-01-01", "2022-06-01")
     assert data is not None and not data.empty
+    assert "returns" in data.columns
 
+    # Try GDELT first; fall back to Trends; fall back to random
     gdelt_df, _ = load_gdelt_sentiment("2022-01-01", "2022-06-01", fast_mode=True)
     if gdelt_df is not None and not gdelt_df.empty:
         data = data.merge(gdelt_df, left_index=True, right_index=True, how="left")
@@ -19,10 +26,14 @@ def test_full_pipeline_smoke():
         if trends is not None and keywords:
             data = data.merge(trends, left_index=True, right_index=True, how="left")
             data[keywords] = data[keywords].ffill().bfill()
-            scaled = StandardScaler().fit_transform(data[keywords])
+            scaled = StandardScaler().fit_transform(data[keywords].fillna(0))
             data["sentiment_index"] = PCA(n_components=1).fit_transform(scaled)
         else:
-            data["sentiment_index"] = np.random.default_rng(42).normal(0, 0.5, len(data))
+            rng = np.random.default_rng(42)
+            data["sentiment_index"] = rng.normal(0, 0.5, len(data))
+
+    data = data.dropna(subset=["returns", "sentiment_index"])
+    assert len(data) > 0, "No data left after cleaning."
 
     result = fit_egarch_model(
         data["returns"].values,
@@ -31,3 +42,5 @@ def test_full_pipeline_smoke():
         1,
     )
     assert result is not None
+    assert hasattr(result, "params")
+    assert len(result.conditional_volatility) > 0
