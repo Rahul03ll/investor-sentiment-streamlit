@@ -47,9 +47,9 @@ Indices covered: **Nifty 50**, **Sensex**, **Bank Nifty** — from 2007 to 2024.
 ```
 ├── app.py                          ← Streamlit dashboard (all tabs & UI)
 ├── core.py                         ← Data loading, sentiment pipeline, EGARCH fitting
-├── egarch_sentiment_analysis.py    ← Standalone analysis script (notebook-style)
 ├── requirements.txt                ← Python dependencies
-├── tests/
+├── runtime.txt                     ← Python version for Streamlit Cloud
+├── tests/                          ← Test suite
 │   ├── conftest.py                 ← Shared pytest fixtures
 │   ├── test_data.py                ← Stock data loading tests
 │   ├── test_ml.py                  ← ML training tests
@@ -72,15 +72,16 @@ Indices covered: **Nifty 50**, **Sensex**, **Bank Nifty** — from 2007 to 2024.
 | Google Trends | Fear keyword search volumes | `pytrends` |
 | NewsAPI / RSS | Headline sentiment (fallback) | `vaderSentiment` |
 
-### 2. Sentiment Pipeline (4-level cascade)
+### 2. Sentiment Pipeline (3-level cascade)
 ```
 GDELT (primary)
   └─► Google Trends (fallback 1)
         └─► NewsAPI / Yahoo Finance / RSS (fallback 2)
-              └─► Random demo data (offline fallback)
 ```
+- **Real data only** - No demo/random data fallback
 - Keywords: `"stock market crash"`, `"Nifty crash"`, `"Sensex fall"`
 - PCA reduces multi-keyword Trends data to a single composite index
+- App stops with clear error if all sources fail
 
 ### 3. Stationarity Testing
 - **Augmented Dickey-Fuller (ADF)** test on log returns and sentiment index
@@ -138,9 +139,6 @@ pip install -r requirements.txt
 
 # 4. Run the dashboard
 streamlit run app.py
-
-# 5. (Optional) Run the standalone analysis script
-python egarch_sentiment_analysis.py
 ```
 
 ### Optional: NewsAPI key

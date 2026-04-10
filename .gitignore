@@ -1,10 +1,42 @@
+# Virtual environments
+.venv/
 .venv312/
-__pycache__/
-*.pyc
-.streamlit/
-.coverage
+venv/
+env/
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables
 .env
 *.env
+
+# Streamlit secrets (keep local only)
+.streamlit/secrets.toml
+
+# Temporary documentation (keep only README.md)
+FIXES_APPLIED.md
+REAL_DATA_FIXES.md
+DEPLOYMENT_SUMMARY.md
+CRITICAL_FIXES.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python version
+.python-version
