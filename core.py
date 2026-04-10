@@ -6,6 +6,9 @@ import pandas as pd
 import requests
 
 
+import streamlit as st
+
+@st.cache_data(ttl=3600)  # Cache 1 hour
 def load_stock_data(ticker, start, end):
     import yfinance as yf
 
@@ -18,6 +21,7 @@ def load_stock_data(ticker, start, end):
     return df.dropna()
 
 
+@st.cache_data(ttl=7200)  # Cache 2 hours for expensive API
 def load_gdelt_sentiment(start, end, fast_mode=True):
     try:
         start_dt = datetime.strptime(start, "%Y-%m-%d")
@@ -100,7 +104,9 @@ def load_trends_data(start, end):
             timeout=(10, 25),
         )
         keywords = ["stock market crash", "Nifty crash", "Sensex fall"]
+        time.sleep(1)  # Avoid immediate 429 rate-limit from Google
         pytrends.build_payload(keywords, timeframe=f"{start} {end}", geo="IN")
+        time.sleep(1)  # Buffer before fetching
         trends = pytrends.interest_over_time()
         if trends is None or trends.empty:
             return None, [], "Google Trends returned no data."
@@ -111,13 +117,14 @@ def load_trends_data(start, end):
         return None, [], str(exc)
 
 
+@st.cache_data(ttl=1800)  # Cache 30 min for expensive fitting
 def fit_egarch_model(returns_array, sentiment_array, p, q):
     from arch import arch_model
 
     returns_pct = returns_array * 100
     model = arch_model(
         returns_pct,
-        vol="EGarch",
+        vol="EGARCH",  # Fixed case sensitivity
         p=p,
         q=q,
         x=sentiment_array.reshape(-1, 1),

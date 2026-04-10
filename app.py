@@ -38,9 +38,10 @@ IS_DARK_MODE = st.get_option("theme.base") == "dark"
 # ── Custom CSS ────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container {
-        padding-top: 1.2rem;
-        padding-bottom: 2rem;
+.block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        padding-right: 1rem;
     }
     .main-header {
         font-size: 2rem;
@@ -202,7 +203,7 @@ with st.sidebar:
 
     st.markdown("---")
     run_button = st.button("🚀 Run Analysis", type="primary",
-                           width="stretch")
+                           use_container_width=True)
 
     st.markdown("---")
     st.markdown(
@@ -335,6 +336,11 @@ try:
         p_order, q_order
     )
     data['volatility'] = result.conditional_volatility
+    
+    # Validate volatility output
+    if not np.isfinite(data['volatility']).all():
+        st.warning("⚠️ EGARCH produced non-finite volatility values. Using rolling std fallback.")
+        data['volatility'] = data['returns'].rolling(20).std() * np.sqrt(252) * 100  # Annualized
 except Exception as e:
     st.error(f"EGARCH fitting failed: {e}")
     st.stop()
@@ -362,8 +368,12 @@ data['vol_tomorrow'] = data['volatility'].shift(-1)
 data['vol_class']    = (data['vol_tomorrow'] > median_vol).astype(int)
 
 data_ml = data[feature_cols + ['vol_class']].dropna()
+data_ml = data_ml.replace([np.inf, -np.inf], np.nan).dropna()
 X = data_ml[feature_cols]
 y = data_ml['vol_class']
+
+if len(X) < 50:
+    st.warning(f"⚠️ Limited ML training data ({len(X)} samples). Results may be unreliable.")
 
 X_train, X_test, y_train, y_test = X.iloc[:int(len(X)*0.8)], \
     X.iloc[int(len(X)*0.8):], y.iloc[:int(len(y)*0.8)], \
@@ -415,11 +425,10 @@ with tab1:
     st.markdown('<div class="section-header">EGARCH Conditional Volatility</div>',
                 unsafe_allow_html=True)
 
-    fig, ax = plt.subplots(figsize=(13, 4))
+    fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(data.index, data['volatility'],
             color='#1f4e79', linewidth=0.9)
-    ax.fill_between(data.index, data['volatility'],
-                    alpha=0.12, color='#1f4e79')
+    ax.fill_between(data.index, data['volatility'], alpha=0.1, color='#1f4e79')
 
     if show_gfc:
         ax.axvspan(pd.Timestamp('2008-01-01'),
@@ -466,7 +475,7 @@ with tab1:
         lambda p: '***' if p < 0.01 else ('**' if p < 0.05 else
                   ('*' if p < 0.10 else ''))
     )
-    st.dataframe(params_df, width="stretch")
+    st.dataframe(params_df, use_container_width=True)
     st.markdown(
         '<div class="insight-box">'
         '<b>Interpretation:</b> beta ≈ 0.99 indicates very high volatility persistence. '
@@ -482,7 +491,7 @@ with tab2:
     st.markdown('<div class="section-header">Sentiment Index Over Time</div>',
                 unsafe_allow_html=True)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 7), sharex=True)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
     ax1.plot(data.index, data['sentiment_index'],
              color='#ed7d31', linewidth=0.9)
@@ -511,25 +520,72 @@ with tab2:
     st.markdown('<div class="section-header">Sentiment vs Volatility Relationship</div>',
                 unsafe_allow_html=True)
 
-    fig, ax = plt.subplots(figsize=(9, 5))
-    scatter = ax.scatter(
-        data['sentiment_index'], data['volatility'],
-        c=data['volatility'], cmap='RdYlBu_r',
-        alpha=0.35, s=6, edgecolors='none'
-    )
-    plt.colorbar(scatter, label='Volatility Level', ax=ax)
+    
+    # Data cleaning for robust regression
+    plot_data = data[['sentiment_index', 'volatility']].dropna()
+    plot_data = plot_data.replace([np.inf, -np.inf], np.nan).dropna()
 
-    z = np.polyfit(data['sentiment_index'], data['volatility'], 1)
-    p = np.poly1d(z)
-    xline = np.linspace(data['sentiment_index'].min(),
-                        data['sentiment_index'].max(), 200)
-    ax.plot(xline, p(xline), 'r--', linewidth=2,
-            label=f'Trend (slope={z[0]:.3f})')
+    fig, ax = plt.subplots(figsize=(9, 6))
+    trend_success = False
+
+    # Ensure sufficient variation and points
+    if len(plot_data) < 10:
+        st.warning("⚠️ Insufficient clean data points for trend analysis (<10)")
+        scatter = ax.scatter(plot_data['sentiment_index'], plot_data['volatility'],
+                           c=plot_data['volatility'], cmap='RdYlBu_r',
+                           alpha=0.6, s=12)
+    else:
+        # Clip outliers to 1st-99th percentiles
+        sent_low, sent_high = plot_data['sentiment_index'].quantile([0.01, 0.99])
+        vol_low, vol_high = plot_data['volatility'].quantile([0.01, 0.99])
+        clean_data = plot_data[
+            (plot_data['sentiment_index'].between(sent_low, sent_high)) &
+            (plot_data['volatility'].between(vol_low, vol_high))
+        ]
+        
+        if len(clean_data) < 5 or clean_data['sentiment_index'].std() < 1e-8:
+            st.warning("⚠️ Insufficient data variation for trend analysis")
+            scatter = ax.scatter(clean_data['sentiment_index'], clean_data['volatility'],
+                               c=clean_data['volatility'], cmap='RdYlBu_r',
+                               alpha=0.6, s=12)
+        else:
+            scatter = ax.scatter(clean_data['sentiment_index'], clean_data['volatility'],
+                               c=clean_data['volatility'], cmap='RdYlBu_r',
+                               alpha=0.35, s=6, edgecolors='none')
+            
+            # Robust linear fit with multiple fallbacks
+            try:
+                # Try polyfit with higher rcond tolerance first
+                z = np.polyfit(clean_data['sentiment_index'], clean_data['volatility'], 1, rcond=1e-10)
+                p = np.poly1d(z)
+                trend_success = True
+            except:
+                try:
+                    # Fallback to scipy linregress
+                    from scipy.stats import linregress
+                    slope, intercept, r_value, p_value, std_err = linregress(
+                        clean_data['sentiment_index'], clean_data['volatility']
+                    )
+                    z = [slope, intercept]
+                    p = np.poly1d(z)
+                    trend_success = True
+                except Exception as e2:
+                    st.warning(f"⚠️ Trend line unavailable: {str(e2)[:80]}")
+                    trend_success = False
+            
+            if trend_success:
+                xline = np.linspace(clean_data['sentiment_index'].min(),
+                                  clean_data['sentiment_index'].max(), 200)
+                ax.plot(xline, p(xline), 'r--', linewidth=2,
+                       label=f'Trend (slope={z[0]:+.3f})')
+    
+    plt.colorbar(scatter, label='Volatility Level', ax=ax)
     ax.set_xlabel('Sentiment Index')
     ax.set_ylabel('Volatility (%)')
     ax.set_title('Investor Sentiment vs Market Volatility',
                  fontweight='bold')
-    ax.legend()
+    if trend_success:
+        ax.legend()
     apply_plot_theme(fig, ax)
     st.pyplot(fig)
     plt.close()
@@ -566,7 +622,7 @@ with tab2:
                 'P-Value': round(p_val, 6),
                 'Significant (p<0.05)': '✅ Yes' if p_val < 0.05 else '❌ No'
             })
-        st.dataframe(pd.DataFrame(gc_table), width="stretch")
+        st.dataframe(pd.DataFrame(gc_table), use_container_width=True)
         st.markdown(
             '<div class="insight-box">'
             '<b>Interpretation:</b> All lags significant (p<0.01) — '
@@ -585,7 +641,7 @@ with tab3:
     st.markdown('<div class="section-header">Crisis Period Comparison</div>',
                 unsafe_allow_html=True)
 
-    fig, ax = plt.subplots(figsize=(13, 5))
+    fig, ax = plt.subplots(figsize=(12, 6))
     gfc   = data.loc['2008-01-01':'2009-12-31']
     covid = data.loc['2020-01-01':'2021-12-31']
 
@@ -629,7 +685,7 @@ with tab3:
                 'Trading Days'     : len(period_df),
             })
     if stats_rows:
-        st.dataframe(pd.DataFrame(stats_rows), width="stretch")
+        st.dataframe(pd.DataFrame(stats_rows), use_container_width=True)
 
     st.markdown(
         '<div class="insight-box">'
@@ -662,7 +718,7 @@ with tab4:
         'Importance': rf.feature_importances_
     }).sort_values('Importance', ascending=False).head(12)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(11, 7))
     bars = ax.barh(
         importance_df['Feature'][::-1],
         importance_df['Importance'][::-1],
@@ -688,7 +744,7 @@ with tab4:
     )
     st.dataframe(
         pd.DataFrame(report_dict).T.round(4),
-        width="stretch"
+        use_container_width=True
     )
 
     st.markdown(
@@ -712,7 +768,7 @@ with tab5:
     desc_df   = data[stat_cols].describe().round(6)
     desc_df.loc['skewness'] = data[stat_cols].skew().round(6)
     desc_df.loc['kurtosis'] = data[stat_cols].kurt().round(6)
-    st.dataframe(desc_df, width="stretch")
+    st.dataframe(desc_df, use_container_width=True)
 
     # ADF Tests
     st.markdown('<div class="section-header">Stationarity Tests (ADF)</div>',
@@ -727,12 +783,12 @@ with tab5:
             'Stationary' : '✅ Yes' if adf[1] < 0.05 else '❌ No',
             'Significance': '***' if adf[1]<0.01 else ('**' if adf[1]<0.05 else '*')
         })
-    st.dataframe(pd.DataFrame(adf_rows), width="stretch")
+    st.dataframe(pd.DataFrame(adf_rows), use_container_width=True)
 
     # Distribution
     st.markdown('<div class="section-header">Return Distribution</div>',
                 unsafe_allow_html=True)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     axes[0].hist(data['returns'], bins=80,
                  color='#1f4e79', alpha=0.75, edgecolor='white', linewidth=0.3)

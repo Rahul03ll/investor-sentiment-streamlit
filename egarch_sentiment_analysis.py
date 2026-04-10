@@ -100,14 +100,21 @@ print(f"   Kurtosis    : {data['returns'].kurt():.4f}")
 
 print("\n[2/7] Fetching Google Trends sentiment data ...")
 
-pytrends = TrendReq()
+pytrends = TrendReq(
+    hl="en-US",
+    tz=330,
+    retries=3,
+    backoff_factor=0.5,
+    timeout=(10, 25),
+)
 pytrends.build_payload(
     KEYWORDS,
     timeframe=f"{START_DATE} {END_DATE}",
     geo="IN"
 )
 trends = pytrends.interest_over_time()
-trends = trends.drop(columns=['isPartial'])
+if 'isPartial' in trends.columns:
+    trends = trends.drop(columns=['isPartial'])
 
 print(f"      ✓  Trends fetched : {len(trends)} monthly observations")
 print("      ✓  Keywords :", KEYWORDS)
@@ -120,6 +127,17 @@ data = data.merge(
     how='left'
 )
 data[KEYWORDS] = data[KEYWORDS].ffill().bfill()
+
+# Validate merge result — timezone mismatch can produce all-NaN columns
+nan_cols = [k for k in KEYWORDS if data[k].isna().all()]
+if nan_cols:
+    raise ValueError(
+        f"Trends merge produced all-NaN for: {nan_cols}. "
+        "Likely a timezone index mismatch. Check trends.index.tz."
+    )
+missing_pct = data[KEYWORDS].isna().mean().max() * 100
+if missing_pct > 50:
+    print(f"      ⚠️  Warning: {missing_pct:.1f}% NaN in trends after merge — results may be unreliable")
 
 # PCA → composite sentiment index
 scaler = StandardScaler()
@@ -182,7 +200,7 @@ returns_pct = data['returns'] * 100
 model_specs = {
     'GARCH(1,1)'    : arch_model(returns_pct, vol='Garch',  p=1,       q=1),
     'GJR-GARCH(1,1)': arch_model(returns_pct, vol='Garch',  p=1, o=1,  q=1),
-    'EGARCH(1,1)'   : arch_model(returns_pct, vol='EGarch', p=1,       q=1),
+    'EGARCH(1,1)'   : arch_model(returns_pct, vol='EGARCH', p=1,       q=1),
 }
 
 fit_results  = {}
@@ -215,7 +233,7 @@ print("\n[5/7] Fitting EGARCH with sentiment regressor ...")
 
 egarch_model = arch_model(
     returns_pct,
-    vol='EGarch',
+    vol='EGARCH',
     p=1, q=1,
     x=data[['sentiment_index']]
 )
@@ -302,7 +320,7 @@ train_sent= data['sentiment_index'].iloc[:split]
 # Fit on train
 train_model = arch_model(
     train_ret,
-    vol='EGarch',
+    vol='EGARCH',
     p=1, q=1,
     x=train_sent.values.reshape(-1, 1)
 )
@@ -311,7 +329,7 @@ train_result = train_model.fit(disp='off')
 # Produce in-sample volatility for test window
 full_model = arch_model(
     returns_pct,
-    vol='EGarch',
+    vol='EGARCH',
     p=1, q=1,
     x=data['sentiment_index'].values.reshape(-1, 1)
 )
@@ -453,7 +471,7 @@ for idx_name, ticker in tickers_multi.items():
         ret = np.log(
             idx_data['Close'] / idx_data['Close'].shift(1)
         ).dropna() * 100
-        m   = arch_model(ret, vol='EGarch', p=1, q=1)
+        m   = arch_model(ret, vol='EGARCH', p=1, q=1)
         r   = m.fit(disp='off')
         vol_dict[idx_name] = r.conditional_volatility
         print(f"   ✓  {idx_name:<12} fitted  "
