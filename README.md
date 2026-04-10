@@ -24,8 +24,9 @@ Indices covered: **Nifty 50**, **Sensex**, **Bank Nifty** — from 2007 to 2024.
 
 ## 🚀 Live Demo
 
-👉 **[Open the App](https://(https://rahul03ll-investor-sentiment-streamlit-app-wyuzma.streamlit.app))**
+👉 **[🌐 Open the App](https://rahul03ll-investor-sentiment-streamlit-app-wyuzma.streamlit.app)**
 
+> Live Streamlit dashboard for sentiment-driven volatility analysis
 ---
 
 ## 📸 Features
