@@ -81,27 +81,33 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
             cur = cur.replace(month=cur.month + 1) if cur.month < 12 \
                 else cur.replace(year=cur.year + 1, month=1)
 
-        # Aggressive sampling for free tier: max 10 API calls
-        if len(months) > 10:
-            step = max(1, len(months) // 10)
-            months = months[::step][:10]
+        # Aggressive sampling for free tier: max 8 API calls (reduced from 10)
+        if len(months) > 8:
+            step = max(1, len(months) // 8)
+            months = months[::step][:8]
         
-        # If still too many, take recent + crisis periods
-        if len(months) > 10:
-            # Keep recent 5 months + 2008-2009 + 2020-2021
-            recent = [m for m in months if m.year >= 2022][:5]
-            crisis = [m for m in months if m.year in [2008, 2009, 2020, 2021]]
-            months = sorted(set(recent + crisis))[:10]
+        # If still too many, prioritize recent months
+        if len(months) > 8:
+            months = months[-8:]  # Take most recent 8 months
 
         records = []
         base_url = "https://api.gdeltproject.org/api/v2/doc/doc"
         
+        # Try multiple query variations
+        queries = [
+            "India Nifty stock market",
+            "India Sensex BSE",
+            "Indian stock exchange"
+        ]
+        
         for i, month in enumerate(months):
-            # Simplified query for better results
+            # Rotate through queries to get better coverage
+            query = queries[i % len(queries)]
+            
             params = {
-                "query": "India Nifty Sensex stock market",
+                "query": query,
                 "mode": "ArtList",
-                "maxrecords": "50",  # Increased for better coverage
+                "maxrecords": "75",  # Increased from 50
                 "format": "json",
                 "startdatetime": month.strftime("%Y%m%d000000"),
                 "enddatetime": month.replace(
@@ -110,7 +116,7 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
             }
             
             try:
-                resp = requests.get(base_url, params=params, timeout=20)
+                resp = requests.get(base_url, params=params, timeout=25)
                 if resp.status_code == 200:
                     data = resp.json()
                     articles = data.get("articles", [])
@@ -132,14 +138,14 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
                                 pass
                 
                 # Longer delay to avoid rate limiting
-                time.sleep(0.5)
+                time.sleep(0.7)  # Increased from 0.5s
                 
             except requests.RequestException as e:
                 # Continue on error, don't fail entire fetch
                 continue
 
         if not records:
-            return None, "GDELT returned no records for the selected period."
+            return None, f"GDELT returned no records for the selected period. Try a shorter date range or wait a few minutes."
 
         # Process records
         df = pd.DataFrame(records)
@@ -149,17 +155,17 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
         df = df.groupby("date")["tone"].mean().rename("sentiment")
         df.index = pd.DatetimeIndex(df.index).tz_localize(None)
         
-        # Resample to daily and interpolate gaps
-        df = df.resample("D").mean().interpolate(method="linear", limit=30)
+        # Resample to daily and interpolate gaps (more aggressive)
+        df = df.resample("D").mean().interpolate(method="linear", limit=60)  # Increased from 30
         
         # If we have at least some data, return it
-        if df.notna().sum() > 10:
+        if df.notna().sum() > 5:  # Reduced threshold from 10
             return df.to_frame(), None
         else:
-            return None, f"GDELT returned insufficient data ({df.notna().sum()} days)."
+            return None, f"GDELT returned insufficient data ({df.notna().sum()} days). Try 'Full' mode or a different date range."
 
     except Exception as exc:
-        return None, f"GDELT error: {exc}"
+        return None, f"GDELT error: {str(exc)}"
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -182,12 +188,10 @@ def load_trends_data(start: str, end: str):
     # Try multiple times with different configurations
     for attempt in range(3):
         try:
-            # Use different retry settings for each attempt
+            # Create TrendReq without retry parameters (let pytrends handle it internally)
             pt = TrendReq(
                 hl="en-US",
                 tz=330,
-                retries=2 + attempt,
-                backoff_factor=0.5 * (attempt + 1),
                 timeout=(10, 30)
             )
             
@@ -232,7 +236,7 @@ def load_trends_data(start: str, end: str):
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))
                 continue
-            return None, [], f"Google Trends error after {attempt + 1} attempts: {exc}"
+            return None, [], f"Google Trends error after {attempt + 1} attempts: {str(exc)}"
     
     return None, [], "Google Trends failed after all retry attempts."
 
@@ -293,6 +297,8 @@ def news_sentiment_pipeline(api_key=None):
     analyzer = SentimentIntensityAnalyzer()
     
     # Try each source with better error handling
+    errors = []
+    
     for loader, source in [
         (lambda: _newsapi_texts(api_key or ""), "NewsAPI"),
         (_yfinance_texts,                        "Yahoo Finance"),
@@ -300,15 +306,25 @@ def news_sentiment_pipeline(api_key=None):
     ]:
         try:
             texts, err = loader()
+            if err:
+                errors.append(f"{source}: {err}")
+                continue
+                
             if texts and len(texts) >= 10:  # Need at least 10 headlines
                 # Calculate sentiment scores
                 scores = []
-                dates = []
                 
                 # Get scores for all texts
                 for t in texts[:100]:
-                    score = analyzer.polarity_scores(t)["compound"]
-                    scores.append(score)
+                    try:
+                        score = analyzer.polarity_scores(t)["compound"]
+                        scores.append(score)
+                    except Exception:
+                        continue
+                
+                if len(scores) < 10:
+                    errors.append(f"{source}: Insufficient valid scores ({len(scores)})")
+                    continue
                 
                 # Create date range (recent data only)
                 end_date = datetime.now().date()
@@ -321,14 +337,18 @@ def news_sentiment_pipeline(api_key=None):
                 if s.std() > 0.01:  # Check for non-constant data
                     return s.resample("D").mean().ffill(), None, source
                 else:
-                    # Data is too constant, try next source
+                    errors.append(f"{source}: Data has insufficient variance (std={s.std():.4f})")
                     continue
+            else:
+                errors.append(f"{source}: Insufficient headlines ({len(texts) if texts else 0})")
                     
         except Exception as e:
+            errors.append(f"{source}: {str(e)}")
             continue
     
     # All sources failed
-    return None, "All news sources failed or returned insufficient data.", "None"
+    error_msg = "; ".join(errors) if errors else "All news sources failed"
+    return None, error_msg, "None"
 
 
 # ╔══════════════════════════════════════════════════════════╗
