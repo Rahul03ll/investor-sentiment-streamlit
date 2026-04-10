@@ -315,13 +315,29 @@ else:
         # Level 3: News pipeline
         news_series, news_err, news_source = news_sentiment_pipeline()
         if news_err is None and not news_series.empty:
-            news_aligned = news_series.reindex(data.index, method="ffill").bfill()
-            data["sentiment_index"] = news_aligned.values
+            # News headlines are recent-only (last ~30–50 days).
+            # Reindex to the full trading-day range: use the mean score as a
+            # constant baseline for all days outside the news window, then
+            # forward/back-fill any remaining gaps.
+            news_mean = float(news_series.mean())
+            # Build a full-range series filled with the mean, then overlay
+            # actual scores where available.
+            full_idx   = data.index
+            base       = pd.Series(news_mean, index=full_idx)
+            # Align news_series to the same tz-naive index
+            ns_aligned = news_series.copy()
+            if ns_aligned.index.tz is not None:
+                ns_aligned.index = ns_aligned.index.tz_localize(None)
+            # Overlay: where news dates overlap with trading days, use real score
+            overlap = ns_aligned.reindex(full_idx)
+            base.update(overlap)
+            data["sentiment_index"] = base.values
             has_sentiment    = True
             sentiment_source = news_source
             st.markdown(
                 f'<div class="warning-box">⚠️ GDELT & Trends unavailable. '
-                f"Using {news_source} news sentiment.</div>",
+                f"Using {news_source} news sentiment (recent headlines, "
+                f"mean={news_mean:.3f} applied to full history).</div>",
                 unsafe_allow_html=True,
             )
         else:
@@ -357,7 +373,11 @@ try:
             data["returns"].rolling(20).std().bfill() * np.sqrt(252) * 100
         )
 except Exception as exc:
-    st.error(f"EGARCH fitting failed: {exc}")
+    st.error(
+        f"EGARCH fitting failed: {exc}\n\n"
+        "This usually means the sentiment data doesn't cover the selected date range. "
+        "Try switching to **Full** sentiment mode or selecting a shorter date range."
+    )
     st.stop()
 
 # Annualised volatility

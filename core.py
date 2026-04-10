@@ -293,14 +293,31 @@ def fit_egarch_model(
     """
     Fit an EGARCH(p,q) model with sentiment as an external regressor.
     Returns the arch ARCHModelResult object.
+    Raises ValueError if inputs are too short or contain non-finite values.
     """
     from arch import arch_model
 
     returns_pct = returns_array * 100
-    # Align lengths (sentiment may differ by 1 row after dropna)
+
+    # Align lengths
     min_len = min(len(returns_pct), len(sentiment_array))
     returns_pct    = returns_pct[:min_len]
     sentiment_trim = sentiment_array[:min_len]
+
+    # Guard: need at least 100 observations for EGARCH to converge
+    if min_len < 100:
+        raise ValueError(
+            f"Insufficient data: {min_len} observations after alignment "
+            "(need ≥ 100). Check that sentiment data covers the selected date range."
+        )
+
+    # Guard: no NaN / inf in either array
+    if not np.isfinite(returns_pct).all():
+        raise ValueError("returns array contains NaN or inf values.")
+    if not np.isfinite(sentiment_trim).all():
+        # Replace any remaining NaN/inf in sentiment with column mean
+        mean_s = np.nanmean(sentiment_trim)
+        sentiment_trim = np.where(np.isfinite(sentiment_trim), sentiment_trim, mean_s)
 
     model = arch_model(
         returns_pct,
