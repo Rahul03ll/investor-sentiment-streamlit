@@ -331,13 +331,22 @@ else:
             # Overlay: where news dates overlap with trading days, use real score
             overlap = ns_aligned.reindex(full_idx)
             base.update(overlap)
-            data["sentiment_index"] = base.values
+            
+            # Add tiny jitter to prevent constant-value issues in statistical tests
+            # This is necessary because news sentiment often returns the same score
+            # for all dates, which breaks ADF and Granger causality tests
+            np.random.seed(42)
+            jitter = np.random.normal(0, news_mean * 1e-6 if news_mean != 0 else 1e-6, len(base))
+            data["sentiment_index"] = base.values + jitter
+            
             has_sentiment    = True
             sentiment_source = news_source
             st.markdown(
                 f'<div class="warning-box">⚠️ GDELT & Trends unavailable. '
                 f"Using {news_source} news sentiment (recent headlines, "
-                f"mean={news_mean:.3f} applied to full history).</div>",
+                f"mean={news_mean:.3f} applied to full history with statistical jitter). "
+                f"<br><b>Note:</b> Statistical tests (ADF, Granger) may be unreliable with "
+                f"constant sentiment data.</div>",
                 unsafe_allow_html=True,
             )
         else:
@@ -685,29 +694,51 @@ with tab2:
     st.markdown('<div class="section-header">Granger Causality: Sentiment → Volatility</div>',
                 unsafe_allow_html=True)
     gc_data = data[["volatility", "sentiment_index"]].dropna()
-    try:
-        gc_res   = grangercausalitytests(gc_data, maxlag=5, verbose=False)
-        gc_table = [
-            {
-                "Lag":                  lag,
-                "F-Statistic":          round(gc_res[lag][0]["ssr_ftest"][0], 4),
-                "P-Value":              round(gc_res[lag][0]["ssr_ftest"][1], 6),
-                "Significant (p<0.05)": "✅ Yes" if gc_res[lag][0]["ssr_ftest"][1] < 0.05 else "❌ No",
-            }
-            for lag in range(1, 6)
-        ]
-        st.dataframe(pd.DataFrame(gc_table), use_container_width=True)
-        sig_lags = sum(1 for r in gc_table if r["Significant (p<0.05)"] == "✅ Yes")
+    # Granger requires both series to have variance (non-constant)
+    # Check if sentiment has meaningful variance (std > 1e-6)
+    sent_std = gc_data["sentiment_index"].std()
+    _gc_ok = (
+        gc_data["sentiment_index"].nunique() > 1
+        and gc_data["volatility"].nunique() > 1
+        and len(gc_data) > 20
+        and sent_std > 1e-6
+    )
+    if not _gc_ok:
         st.markdown(
-            f'<div class="insight-box">'
-            f"<b>Interpretation:</b> {sig_lags}/5 lags significant — "
-            f"{'strong' if sig_lags >= 4 else 'partial'} evidence that sentiment "
-            "Granger-causes volatility."
-            "</div>",
+            '<div class="warning-box">⚠️ Granger causality test skipped — '
+            "sentiment index is constant or near-constant (RSS/news fallback returns a single score). "
+            "Use GDELT or Google Trends mode for this test.</div>",
             unsafe_allow_html=True,
         )
-    except Exception as exc:
-        st.error(f"Granger test failed: {exc}")
+    else:
+        try:
+            gc_res   = grangercausalitytests(gc_data, maxlag=5, verbose=False)
+            gc_table = [
+                {
+                    "Lag":                  lag,
+                    "F-Statistic":          round(gc_res[lag][0]["ssr_ftest"][0], 4),
+                    "P-Value":              round(gc_res[lag][0]["ssr_ftest"][1], 6),
+                    "Significant (p<0.05)": "✅ Yes" if gc_res[lag][0]["ssr_ftest"][1] < 0.05 else "❌ No",
+                }
+                for lag in range(1, 6)
+            ]
+            st.dataframe(pd.DataFrame(gc_table), use_container_width=True)
+            sig_lags = sum(1 for r in gc_table if r["Significant (p<0.05)"] == "✅ Yes")
+            st.markdown(
+                f'<div class="insight-box">'
+                f"<b>Interpretation:</b> {sig_lags}/5 lags significant — "
+                f"{'strong' if sig_lags >= 4 else 'partial'} evidence that sentiment "
+                "Granger-causes volatility."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        except Exception as exc:
+            st.markdown(
+                '<div class="warning-box">⚠️ Granger causality test failed: '
+                f"{str(exc)[:200]}. This usually means the sentiment data is constant or "
+                "has insufficient variance.</div>",
+                unsafe_allow_html=True,
+            )
 
 # ─────────────────────────────────────────────────────────
 # TAB 3 — CRISIS ANALYSIS
@@ -956,14 +987,40 @@ with tab6:
                 unsafe_allow_html=True)
     adf_rows = []
     for col in ["returns", "volatility", "sentiment_index"]:
-        adf = adfuller(data[col].dropna())
-        adf_rows.append({
-            "Series":       col,
-            "ADF Stat":     round(adf[0], 4),
-            "P-Value":      round(adf[1], 6),
-            "Stationary":   "✅ Yes" if adf[1] < 0.05 else "❌ No",
-            "Significance": "***" if adf[1] < 0.01 else ("**" if adf[1] < 0.05 else "*"),
-        })
+        series = data[col].dropna()
+        # Skip ADF if series is constant or near-constant (std < 1e-6)
+        series_std = series.std()
+        if series.nunique() <= 1 or series_std < 1e-6:
+            adf_rows.append({
+                "Series": col, "ADF Stat": "—", "P-Value": "—",
+                "Stationary": "⚠️ Constant", "Significance": "—",
+            })
+        else:
+            try:
+                adf = adfuller(series)
+                adf_rows.append({
+                    "Series": col, "ADF Stat": round(adf[0], 4),
+                    "P-Value": round(adf[1], 6),
+                    "Stationary": "✅ Yes" if adf[1] < 0.05 else "❌ No",
+                    "Significance": "***" if adf[1] < 0.01 else ("**" if adf[1] < 0.05 else "*"),
+                })
+            except ValueError as e:
+                # Catch "Invalid input, x is constant" error
+                if "constant" in str(e).lower():
+                    adf_rows.append({
+                        "Series": col, "ADF Stat": "—", "P-Value": "—",
+                        "Stationary": "⚠️ Constant", "Significance": "—",
+                    })
+                else:
+                    adf_rows.append({
+                        "Series": col, "ADF Stat": "—", "P-Value": "—",
+                        "Stationary": f"⚠️ Error", "Significance": "—",
+                    })
+            except Exception as e:
+                adf_rows.append({
+                    "Series": col, "ADF Stat": "—", "P-Value": "—",
+                    "Stationary": f"⚠️ Error", "Significance": "—",
+                })
     st.dataframe(pd.DataFrame(adf_rows), use_container_width=True)
 
     # Return Distribution
