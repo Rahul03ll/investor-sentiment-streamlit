@@ -66,11 +66,14 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
     """
     Fetch GDELT article tone for Indian market news.
     Returns (DataFrame['sentiment'], error_str | None).
+    
+    Optimized for Streamlit Cloud free tier with aggressive sampling.
     """
     try:
         start_dt = datetime.strptime(start, "%Y-%m-%d")
         end_dt   = datetime.strptime(end,   "%Y-%m-%d")
 
+        # Generate monthly intervals
         months = []
         cur = start_dt.replace(day=1)
         while cur <= end_dt:
@@ -78,49 +81,82 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
             cur = cur.replace(month=cur.month + 1) if cur.month < 12 \
                 else cur.replace(year=cur.year + 1, month=1)
 
-        if fast_mode and len(months) > 12:
-            step = max(1, len(months) // 12)
-            months = months[::step]
+        # Aggressive sampling for free tier: max 10 API calls
+        if len(months) > 10:
+            step = max(1, len(months) // 10)
+            months = months[::step][:10]
+        
+        # If still too many, take recent + crisis periods
+        if len(months) > 10:
+            # Keep recent 5 months + 2008-2009 + 2020-2021
+            recent = [m for m in months if m.year >= 2022][:5]
+            crisis = [m for m in months if m.year in [2008, 2009, 2020, 2021]]
+            months = sorted(set(recent + crisis))[:10]
 
         records = []
         base_url = "https://api.gdeltproject.org/api/v2/doc/doc"
-        for month in months:
+        
+        for i, month in enumerate(months):
+            # Simplified query for better results
             params = {
-                "query": "India stock market Nifty Sensex sourcelang:english sourcecountry:IN",
-                "mode": "ArtList", "maxrecords": "25", "format": "json",
+                "query": "India Nifty Sensex stock market",
+                "mode": "ArtList",
+                "maxrecords": "50",  # Increased for better coverage
+                "format": "json",
                 "startdatetime": month.strftime("%Y%m%d000000"),
                 "enddatetime": month.replace(
                     day=28 if month.month == 2 else 30
                 ).strftime("%Y%m%d235959"),
             }
+            
             try:
-                resp = requests.get(base_url, params=params, timeout=15)
-                if resp.status_code != 200:
-                    continue
-                for art in resp.json().get("articles", []):
-                    tone_str = art.get("tone", "")
-                    date_str = art.get("seendate", "")[:8]
-                    if tone_str and len(date_str) == 8:
-                        try:
-                            records.append({
-                                "date": datetime.strptime(date_str, "%Y%m%d"),
-                                "tone": float(tone_str.split(",")[0]),
-                            })
-                        except (ValueError, IndexError):
-                            pass
-                time.sleep(0.3)
-            except requests.RequestException:
+                resp = requests.get(base_url, params=params, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    articles = data.get("articles", [])
+                    
+                    for art in articles:
+                        tone_str = art.get("tone", "")
+                        date_str = art.get("seendate", "")[:8]
+                        
+                        if tone_str and len(date_str) == 8:
+                            try:
+                                tone_val = float(tone_str.split(",")[0])
+                                # Filter extreme outliers (GDELT can have bad data)
+                                if -10 <= tone_val <= 10:
+                                    records.append({
+                                        "date": datetime.strptime(date_str, "%Y%m%d"),
+                                        "tone": tone_val,
+                                    })
+                            except (ValueError, IndexError):
+                                pass
+                
+                # Longer delay to avoid rate limiting
+                time.sleep(0.5)
+                
+            except requests.RequestException as e:
+                # Continue on error, don't fail entire fetch
                 continue
 
         if not records:
-            return None, "GDELT returned no records."
+            return None, "GDELT returned no records for the selected period."
 
+        # Process records
         df = pd.DataFrame(records)
         df["date"] = pd.to_datetime(df["date"])
+        
+        # Group by date and take mean
         df = df.groupby("date")["tone"].mean().rename("sentiment")
         df.index = pd.DatetimeIndex(df.index).tz_localize(None)
-        df = df.resample("D").mean()
-        return df.to_frame(), None
+        
+        # Resample to daily and interpolate gaps
+        df = df.resample("D").mean().interpolate(method="linear", limit=30)
+        
+        # If we have at least some data, return it
+        if df.notna().sum() > 10:
+            return df.to_frame(), None
+        else:
+            return None, f"GDELT returned insufficient data ({df.notna().sum()} days)."
 
     except Exception as exc:
         return None, f"GDELT error: {exc}"
@@ -135,36 +171,70 @@ def load_trends_data(start: str, end: str):
     """
     Fetch Google Trends for fear keywords.
     Returns (DataFrame, keywords_list, error_str | None).
+    
+    Optimized for reliability with retry logic.
     """
     if not _HAS_PYTRENDS:
         return None, [], "pytrends not installed."
 
     keywords = ["stock market crash", "Nifty crash", "Sensex fall"]
-    try:
-        pt = TrendReq(hl="en-US", tz=330, retries=2, backoff_factor=0.5, timeout=(10, 25))
-        pt.build_payload(keywords, timeframe=f"{start} {end}", geo="IN")
-        trends = pt.interest_over_time()
+    
+    # Try multiple times with different configurations
+    for attempt in range(3):
+        try:
+            # Use different retry settings for each attempt
+            pt = TrendReq(
+                hl="en-US",
+                tz=330,
+                retries=2 + attempt,
+                backoff_factor=0.5 * (attempt + 1),
+                timeout=(10, 30)
+            )
+            
+            # Build payload
+            pt.build_payload(keywords, timeframe=f"{start} {end}", geo="IN")
+            trends = pt.interest_over_time()
 
-        if trends is None or trends.empty:
-            return None, [], "Google Trends returned empty data."
-        if "isPartial" in trends.columns:
-            trends = trends.drop(columns=["isPartial"])
-        if trends.index.tz is not None:
-            trends.index = trends.index.tz_localize(None)
+            if trends is None or trends.empty:
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                return None, [], "Google Trends returned empty data after retries."
+            
+            # Clean up the data
+            if "isPartial" in trends.columns:
+                trends = trends.drop(columns=["isPartial"])
+            
+            # Fix timezone issues
+            if trends.index.tz is not None:
+                trends.index = trends.index.tz_localize(None)
 
-        present = [k for k in keywords if k in trends.columns]
-        if not present:
-            return None, [], "No keyword columns in Trends response."
+            # Check for valid keywords
+            present = [k for k in keywords if k in trends.columns]
+            if not present:
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                return None, [], "No keyword columns in Trends response."
 
-        # Drop all-NaN keywords
-        present = [k for k in present if not trends[k].isna().all()]
-        if not present:
-            return None, [], "All Trends columns are NaN."
+            # Drop all-NaN keywords
+            present = [k for k in present if not trends[k].isna().all()]
+            if not present:
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                return None, [], "All Trends columns are NaN."
 
-        return trends[present], present, None
+            # Success! Return the data
+            return trends[present], present, None
 
-    except Exception as exc:
-        return None, [], f"Google Trends error: {exc}"
+        except Exception as exc:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            return None, [], f"Google Trends error after {attempt + 1} attempts: {exc}"
+    
+    return None, [], "Google Trends failed after all retry attempts."
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -214,34 +284,51 @@ def _rss_texts():
 
 def news_sentiment_pipeline(api_key=None):
     """
-    3-level news sentiment fallback.
+    3-level news sentiment fallback with improved data collection.
     Returns (pd.Series, error | None, source_name).
     """
     if not _HAS_VADER:
-        dummy = pd.Series(
-            np.zeros(30),
-            index=pd.date_range(end=datetime.now().date(), periods=30),
-        )
-        return dummy, "vaderSentiment not installed.", "None"
+        return None, "vaderSentiment not installed.", "None"
 
     analyzer = SentimentIntensityAnalyzer()
+    
+    # Try each source with better error handling
     for loader, source in [
         (lambda: _newsapi_texts(api_key or ""), "NewsAPI"),
         (_yfinance_texts,                        "Yahoo Finance"),
         (_rss_texts,                             "RSS Feed"),
     ]:
-        texts, err = loader()
-        if texts:
-            scores = [analyzer.polarity_scores(t)["compound"] for t in texts[:100]]
-            idx    = pd.date_range(end=datetime.now().date(), periods=len(scores))
-            s      = pd.Series(scores, index=idx, name="sentiment")
-            return s.resample("D").mean().ffill(), None, source
-
-    dummy = pd.Series(
-        np.zeros(30),
-        index=pd.date_range(end=datetime.now().date(), periods=30),
-    )
-    return dummy, "All news sources failed.", "None"
+        try:
+            texts, err = loader()
+            if texts and len(texts) >= 10:  # Need at least 10 headlines
+                # Calculate sentiment scores
+                scores = []
+                dates = []
+                
+                # Get scores for all texts
+                for t in texts[:100]:
+                    score = analyzer.polarity_scores(t)["compound"]
+                    scores.append(score)
+                
+                # Create date range (recent data only)
+                end_date = datetime.now().date()
+                start_date = end_date - pd.Timedelta(days=len(scores))
+                idx = pd.date_range(start=start_date, end=end_date, periods=len(scores))
+                
+                s = pd.Series(scores, index=idx, name="sentiment")
+                
+                # Only return if we have meaningful variance
+                if s.std() > 0.01:  # Check for non-constant data
+                    return s.resample("D").mean().ffill(), None, source
+                else:
+                    # Data is too constant, try next source
+                    continue
+                    
+        except Exception as e:
+            continue
+    
+    # All sources failed
+    return None, "All news sources failed or returned insufficient data.", "None"
 
 
 # ╔══════════════════════════════════════════════════════════╗

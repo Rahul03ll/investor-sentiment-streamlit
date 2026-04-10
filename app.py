@@ -173,11 +173,26 @@ with st.sidebar:
         "Bank Nifty (^NSEBANK)": "^NSEBANK",
     }[index_choice]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        start_year = st.selectbox("Start Year", list(range(2007, 2024)), index=0)
-    with col2:
-        end_year = st.selectbox("End Year", list(range(2010, 2026)), index=14)
+    st.markdown("### 📅 Date Range")
+    
+    # Preset date ranges
+    preset = st.radio(
+        "Quick Select",
+        ["Recent (2020-2024)", "Full History (2007-2024)", "Custom"],
+        index=0,
+        help="Recent period works best with free tier APIs"
+    )
+    
+    if preset == "Recent (2020-2024)":
+        start_year, end_year = 2020, 2024
+    elif preset == "Full History (2007-2024)":
+        start_year, end_year = 2007, 2024
+    else:  # Custom
+        col1, col2 = st.columns(2)
+        with col1:
+            start_year = st.selectbox("Start Year", list(range(2007, 2025)), index=0)
+        with col2:
+            end_year = st.selectbox("End Year", list(range(2010, 2026)), index=15)
 
     if start_year >= end_year:
         st.error("Start year must be before end year.")
@@ -225,7 +240,8 @@ if not run_button:
     <b>Run Analysis</b> to begin.<br><br>
     This tool analyzes the relationship between <b>investor sentiment</b>
     (GDELT → Google Trends → News fallback) and <b>market volatility</b>
-    (modeled via EGARCH) in the Indian stock market.
+    (modeled via EGARCH) in the Indian stock market.<br><br>
+    <b>💡 Tip:</b> For best results on free tier, use the "Recent (2020-2024)" date range.
     </div>
     """, unsafe_allow_html=True)
 
@@ -234,23 +250,27 @@ if not run_button:
         st.markdown("**📊 Volatility Modeling**\n"
                     "- EGARCH conditional volatility\n"
                     "- GARCH / GJR / EGARCH comparison\n"
-                    "- Crisis period analysis")
+                    "- Crisis period analysis\n"
+                    "- Annualized volatility metrics")
     with c2:
         st.markdown("**🧠 Sentiment Analysis**\n"
                     "- GDELT tone-based sentiment\n"
                     "- Google Trends fallback\n"
                     "- News pipeline (RSS/Yahoo)\n"
-                    "- PCA dimensionality reduction")
+                    "- PCA dimensionality reduction\n"
+                    "- **Real data only - no demo mode**")
     with c3:
         st.markdown("**🤖 ML Prediction**\n"
                     "- Hybrid EGARCH + Random Forest\n"
                     "- Volatility direction forecasting\n"
-                    "- Feature importance & confusion matrix")
+                    "- Feature importance analysis\n"
+                    "- Confusion matrix & metrics")
     with c4:
         st.markdown("**📊 Multi-Index**\n"
                     "- Nifty 50 vs Sensex vs Bank Nifty\n"
                     "- Cross-index volatility correlation\n"
-                    "- Rolling volatility windows")
+                    "- Rolling volatility windows\n"
+                    "- Regime analysis")
     st.stop()
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -276,11 +296,11 @@ progress_bar.progress(20)
 
 has_sentiment      = False
 variance_explained = 0.0
-sentiment_source   = "Demo"
+sentiment_source   = "None"
 gdelt_err          = None
 trends_err         = None
 
-# Level 1: GDELT
+# Level 1: GDELT (Primary - most reliable for historical data)
 gdelt_df, gdelt_err = load_gdelt_sentiment(
     START_DATE, END_DATE, fast_mode=(sentiment_mode == "Fast")
 )
@@ -294,7 +314,7 @@ if gdelt_df is not None and not gdelt_df.empty:
     st.markdown('<div class="success-box">✅ Using GDELT sentiment as primary source.</div>',
                 unsafe_allow_html=True)
 else:
-    # Level 2: Google Trends
+    # Level 2: Google Trends (Secondary - good for recent periods)
     trends_df, keywords, trends_err = load_trends_data(START_DATE, END_DATE)
     if trends_df is not None and len(keywords) > 0:
         data = data.merge(trends_df, left_index=True, right_index=True, how="left")
@@ -307,57 +327,71 @@ else:
         has_sentiment    = True
         sentiment_source = "Google Trends"
         st.markdown(
-            f'<div class="warning-box">⚠️ GDELT unavailable ({gdelt_err}). '
+            f'<div class="warning-box">⚠️ GDELT unavailable: {gdelt_err}. '
             "Using Google Trends sentiment fallback.</div>",
             unsafe_allow_html=True,
         )
     else:
-        # Level 3: News pipeline
+        # Level 3: News pipeline (Tertiary - recent headlines only)
         news_series, news_err, news_source = news_sentiment_pipeline()
-        if news_err is None and not news_series.empty:
-            # News headlines are recent-only (last ~30–50 days).
-            # Reindex to the full trading-day range: use the mean score as a
-            # constant baseline for all days outside the news window, then
-            # forward/back-fill any remaining gaps.
-            news_mean = float(news_series.mean())
-            # Build a full-range series filled with the mean, then overlay
-            # actual scores where available.
-            full_idx   = data.index
-            base       = pd.Series(news_mean, index=full_idx)
-            # Align news_series to the same tz-naive index
-            ns_aligned = news_series.copy()
-            if ns_aligned.index.tz is not None:
-                ns_aligned.index = ns_aligned.index.tz_localize(None)
-            # Overlay: where news dates overlap with trading days, use real score
-            overlap = ns_aligned.reindex(full_idx)
-            base.update(overlap)
+        if news_err is None and news_series is not None and not news_series.empty:
+            # News data is recent only - we need to handle the date range carefully
+            # Only use news sentiment if the selected date range is recent (last 2 years)
+            recent_cutoff = pd.Timestamp.now() - pd.DateOffset(years=2)
             
-            # Add tiny jitter to prevent constant-value issues in statistical tests
-            # This is necessary because news sentiment often returns the same score
-            # for all dates, which breaks ADF and Granger causality tests
-            np.random.seed(42)
-            jitter = np.random.normal(0, news_mean * 1e-6 if news_mean != 0 else 1e-6, len(base))
-            data["sentiment_index"] = base.values + jitter
-            
-            has_sentiment    = True
-            sentiment_source = news_source
-            st.markdown(
-                f'<div class="warning-box">⚠️ GDELT & Trends unavailable. '
-                f"Using {news_source} news sentiment (recent headlines, "
-                f"mean={news_mean:.3f} applied to full history with statistical jitter). "
-                f"<br><b>Note:</b> Statistical tests (ADF, Granger) may be unreliable with "
-                f"constant sentiment data.</div>",
-                unsafe_allow_html=True,
-            )
+            if data.index[-1] >= recent_cutoff:
+                # Align news_series to trading days
+                ns_aligned = news_series.copy()
+                if ns_aligned.index.tz is not None:
+                    ns_aligned.index = ns_aligned.index.tz_localize(None)
+                
+                # Only use news for recent period
+                recent_data = data[data.index >= recent_cutoff].copy()
+                news_reindexed = ns_aligned.reindex(recent_data.index, method="ffill")
+                
+                # Check if we have enough non-null data
+                if news_reindexed.notna().sum() > 30:
+                    # Merge with full dataset
+                    data["sentiment_index"] = np.nan
+                    data.loc[data.index >= recent_cutoff, "sentiment_index"] = news_reindexed.values
+                    
+                    # For older data, use a neutral baseline (0)
+                    data["sentiment_index"] = data["sentiment_index"].fillna(0)
+                    
+                    has_sentiment    = True
+                    sentiment_source = news_source
+                    st.markdown(
+                        f'<div class="warning-box">⚠️ GDELT & Trends unavailable. '
+                        f"Using {news_source} news sentiment for recent period only. "
+                        f"<br><b>Note:</b> Historical data (before {recent_cutoff.date()}) uses neutral sentiment baseline.</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    has_sentiment = False
+            else:
+                has_sentiment = False
         else:
-            # Level 4: Demo
-            np.random.seed(42)
-            data["sentiment_index"] = np.random.randn(len(data)) * 0.5
-            sentiment_source = "Demo (random)"
-            st.info(
-                "🔄 All live sentiment sources unavailable — showing demo data.\n\n"
-                f"GDELT: {gdelt_err or 'OK'} | Trends: {trends_err or 'OK'}"
-            )
+            has_sentiment = False
+
+# If no sentiment data available, show error and stop
+if not has_sentiment:
+    st.error(
+        "❌ **Unable to fetch sentiment data from any source.**\n\n"
+        "**Possible reasons:**\n"
+        "- GDELT API rate limiting or unavailable\n"
+        "- Google Trends rate limiting (try again in a few minutes)\n"
+        "- News sources unavailable\n\n"
+        "**Suggestions:**\n"
+        "1. Try selecting a shorter date range (e.g., 2020-2024)\n"
+        "2. Wait a few minutes and try again\n"
+        "3. Switch between 'Fast' and 'Full' sentiment modes\n\n"
+        f"**Error details:**\n"
+        f"- GDELT: {gdelt_err or 'Unknown error'}\n"
+        f"- Google Trends: {trends_err or 'Unknown error'}\n"
+        f"- News: {news_err or 'Unknown error'}"
+    )
+    st.stop()
+
 
 # ── 3. Fit EGARCH ─────────────────────────────────────────
 status_text.text("⚙️ Fitting EGARCH model...")
