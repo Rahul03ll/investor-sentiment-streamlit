@@ -17,7 +17,13 @@ warnings.filterwarnings("ignore")
 
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.stattools import adfuller, grangercausalitytests
 
@@ -439,18 +445,16 @@ data["sent_ma5"]   = data["sentiment_index"].rolling(5).mean()
 data["vol_change"] = data["volatility"].pct_change()
 feature_cols += ["vol_ma5", "vol_ma20", "sent_ma5", "vol_change"]
 
-# Target: next-day RETURN direction (up/down) — avoids vol-leakage
-# Using vol_class based on FUTURE volatility but with a proper gap
-data["vol_class"] = (data["volatility"].shift(-1) > data["volatility"].median()).astype(int)
+# Target: next-day volatility state relative to historical baseline
+# To prevent lookahead leakage, compute median threshold strictly on the training partition
+clean_data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=list(dict.fromkeys(feature_cols))).copy()
+split_idx = int(len(clean_data) * 0.8)
+vol_threshold = clean_data["volatility"].iloc[:split_idx].median() if split_idx > 0 else clean_data["volatility"].median()
+clean_data["vol_class"] = (clean_data["volatility"].shift(-1) > vol_threshold).astype(int)
 
-data_ml = (
-    data[feature_cols + ["vol_class"]]
-    .replace([np.inf, -np.inf], np.nan)
-    .dropna()
-)
+data_ml = clean_data[list(dict.fromkeys(feature_cols)) + ["vol_class"]].dropna()
 
-# Remove current-day volatility from features to prevent leakage
-# Keep only lagged volatility features
+# Remove current-day volatility from features to prevent leakage/shortcut
 safe_features = [c for c in feature_cols if c != "volatility"]
 X = data_ml[safe_features]
 y = data_ml["vol_class"]
@@ -468,9 +472,15 @@ rf = RandomForestClassifier(
 )
 rf.fit(X_train, y_train)
 y_pred  = rf.predict(X_test)
-y_prob  = rf.predict_proba(X_test)[:, 1]
+if rf.n_classes_ > 1 and len(np.unique(y_test)) > 1:
+    y_prob  = rf.predict_proba(X_test)[:, 1]
+    roc_auc = float(roc_auc_score(y_test, y_prob))
+else:
+    y_prob  = np.zeros(len(X_test))
+    roc_auc = np.nan
+
 ml_acc  = accuracy_score(y_test, y_pred)
-baseline = max(y_test.mean(), 1 - y_test.mean())
+baseline = max(y_test.mean(), 1 - y_test.mean()) if len(y_test) > 0 else 0.5
 
 progress_bar.progress(100)
 status_text.text("✅ Analysis complete!")
@@ -588,10 +598,10 @@ with tab1:
         st.markdown('<div class="section-header">Model Comparison: GARCH vs GJR vs EGARCH</div>',
                     unsafe_allow_html=True)
         st.dataframe(model_cmp_df, use_container_width=True)
-        best = model_cmp_df["AIC"].idxmin()
+        best_model = model_cmp_df.loc[model_cmp_df["AIC"].idxmin(), "Model"]
         st.markdown(
             f'<div class="insight-box">'
-            f"<b>Best model by AIC:</b> <b>{best}</b> — "
+            f"<b>Best model by AIC:</b> <b>{best_model}</b> — "
             "EGARCH is preferred when asymmetric volatility response to shocks is present."
             "</div>",
             unsafe_allow_html=True,
@@ -820,19 +830,19 @@ with tab4:
     st.markdown('<div class="section-header">Hybrid EGARCH + Random Forest Model</div>',
                 unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Test Accuracy",  f"{ml_acc*100:.2f}%")
     c2.metric("Baseline",       f"{baseline*100:.2f}%")
     c3.metric("Lift vs Baseline", f"{(ml_acc - baseline)*100:+.2f}%")
-    c4.metric("Test Samples",   f"{len(y_test):,}")
+    c4.metric("AUC-ROC",        f"{roc_auc:.4f}" if np.isfinite(roc_auc) else "N/A")
+    c5.metric("Test Samples",   f"{len(y_test):,}")
 
     if ml_acc > 0.90:
         st.markdown(
             '<div class="warning-box">'
             "⚠️ <b>High accuracy note:</b> Accuracy >90% may indicate the model is "
             "learning volatility persistence (autocorrelation) rather than true predictive signal. "
-            "Check the lift vs baseline — a small lift means the model adds limited value beyond "
-            "simply predicting the majority class."
+            "Check the lift vs baseline and AUC-ROC score to assess predictive discrimination beyond majority-class bias."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -858,34 +868,58 @@ with tab4:
     st.pyplot(fig)
     plt.close()
 
-    # Confusion Matrix
-    st.markdown('<div class="section-header">Confusion Matrix</div>',
-                unsafe_allow_html=True)
-    cm = confusion_matrix(y_test, y_pred)
-    fig, ax = plt.subplots(figsize=(5, 4))
-    im = ax.imshow(cm, cmap="Blues")
-    plt.colorbar(im, ax=ax)
-    for i in range(2):
-        for j in range(2):
-            ax.text(j, i, str(cm[i, j]), ha="center", va="center",
-                    fontsize=14, fontweight="bold",
-                    color="white" if cm[i, j] > cm.max() / 2 else "black")
-    ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
-    ax.set_xticklabels(["Low Vol", "High Vol"])
-    ax.set_yticklabels(["Low Vol", "High Vol"])
-    ax.set_xlabel("Predicted"); ax.set_ylabel("Actual")
-    ax.set_title("Confusion Matrix", fontweight="bold")
-    apply_plot_theme(fig, ax)
-    st.pyplot(fig)
-    plt.close()
+    # Diagnostics: Confusion Matrix & ROC Curve
+    col_cm, col_roc = st.columns(2)
+    with col_cm:
+        st.markdown('<div class="section-header">Confusion Matrix</div>',
+                    unsafe_allow_html=True)
+        cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
+        fig, ax = plt.subplots(figsize=(5, 4))
+        im = ax.imshow(cm, cmap="Blues")
+        plt.colorbar(im, ax=ax)
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, str(cm[i, j]), ha="center", va="center",
+                        fontsize=14, fontweight="bold",
+                        color="white" if cm[i, j] > cm.max() / 2 else "black")
+        ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
+        ax.set_xticklabels(["Low Vol", "High Vol"])
+        ax.set_yticklabels(["Low Vol", "High Vol"])
+        ax.set_xlabel("Predicted"); ax.set_ylabel("Actual")
+        ax.set_title("Confusion Matrix", fontweight="bold")
+        apply_plot_theme(fig, ax)
+        st.pyplot(fig)
+        plt.close()
+
+    with col_roc:
+        st.markdown('<div class="section-header">ROC Curve</div>',
+                    unsafe_allow_html=True)
+        fig, ax = plt.subplots(figsize=(5, 4))
+        if np.isfinite(roc_auc) and len(np.unique(y_test)) > 1:
+            fpr, tpr, _ = roc_curve(y_test, y_prob)
+            ax.plot(fpr, tpr, color="#2e75b6", lw=2, label=f"ROC (AUC = {roc_auc:.3f})")
+            ax.plot([0, 1], [0, 1], color="#94a3b8", linestyle="--", lw=1, label="Chance")
+            ax.set_xlabel("False Positive Rate")
+            ax.set_ylabel("True Positive Rate")
+            ax.set_title("Receiver Operating Characteristic", fontweight="bold")
+            ax.legend(loc="lower right", fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "Single class in test set\nROC curve undefined",
+                    ha="center", va="center", transform=ax.transAxes, color="#64748b")
+            ax.set_title("ROC Curve (N/A)", fontweight="bold")
+        apply_plot_theme(fig, ax)
+        st.pyplot(fig)
+        plt.close()
 
     # Classification Report
     st.markdown('<div class="section-header">Classification Report</div>',
                 unsafe_allow_html=True)
     report_dict = classification_report(
         y_test, y_pred,
+        labels=[0, 1],
         target_names=["Low Volatility", "High Volatility"],
         output_dict=True,
+        zero_division=0,
     )
     st.dataframe(pd.DataFrame(report_dict).T.round(4), use_container_width=True)
 
@@ -893,8 +927,9 @@ with tab4:
         '<div class="insight-box">'
         "<b>📌 Model Insight:</b> The hybrid model combines EGARCH-estimated "
         "conditional volatility lags with sentiment features to predict whether "
-        "next-day volatility will be above or below the historical median. "
-        "Current-day volatility is excluded from features to prevent data leakage."
+        "next-day volatility will be above or below the training-set baseline median. "
+        "Current-day volatility is excluded from features to prevent lookahead data leakage, "
+        "and AUC-ROC measures discrimination ability across probability thresholds."
         "</div>",
         unsafe_allow_html=True,
     )

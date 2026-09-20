@@ -115,20 +115,27 @@ While EGARCH estimates continuous conditional volatility, quantitative risk mana
 #### Target Formulation
 We define a binary next-day volatility state variable $Y_t$:
 
-$$Y_t = \begin{cases} 1 & \text{if } \sigma_{t+1} > \text{Median}(\sigma_{1:T}) \\ 0 & \text{if } \sigma_{t+1} \leq \text{Median}(\sigma_{1:T}) \end{cases}$$
+$$Y_t = \begin{cases} 1 & \text{if } \sigma_{t+1} > \text{Median}(\sigma_{1:T_{\text{train}}}) \\ 0 & \text{if } \sigma_{t+1} \leq \text{Median}(\sigma_{1:T_{\text{train}}}) \end{cases}$$
 
 #### Feature Vector (Leakage-Safe)
 To prevent lookahead bias and target-leakage:
-1. **Current-day conditional volatility $\sigma_t$ is strictly excluded** from the feature set, preventing the tree from simply memorizing the high autoregressive persistence ($\beta \approx 0.98$).
-2. Only historical return, sentiment, and volatility states prior to $t+1$ are supplied:
+1. **Target thresholding is strictly grounded in the training sample** ($\text{Median}(\sigma_{1:T_{\text{train}}})$), preventing forward test-set distributional statistics from leaking into training labels.
+2. **Current-day conditional volatility $\sigma_t$ is strictly excluded** from the feature set, preventing the tree from merely memorizing the high autoregressive persistence ($\beta \approx 0.98$).
+3. Only historical return, sentiment, and volatility states prior to $t+1$ are supplied:
    $$\mathbf{X}_t = \Big[ r_t, r_{t-1}, r_{t-2}, r_{t-3}, S_t, S_{t-1}, S_{t-2}, S_{t-3}, \sigma_{t-1}, \sigma_{t-2}, \sigma_{t-3}, \text{MA}_5(\sigma_t), \text{MA}_{20}(\sigma_t), \text{MA}_5(S_t), \Delta \sigma_t \Big]$$
 
-#### Classifier Architecture & Evaluation
+#### Classifier Architecture & Evaluation Metrics
 - **Algorithm**: Random Forest Classifier ($B = 200$ estimators, `max_depth=5`, `min_samples_leaf=20`).
 - **Validation**: Strict **chronological 80/20 train-test split** (first 80% of historical timeline for training, final 20% for out-of-sample forward testing). K-fold random shuffling is intentionally avoided to preserve temporal causality.
 - **Evaluation Metrics**:
-  - Out-of-Sample Accuracy: $\frac{\text{TP} + \text{TN}}{\text{Total}}$
-  - **Lift vs. Baseline**: $\text{Accuracy} - \max(P(Y=1), P(Y=0))$. Demonstrates true predictive edge above a naive majority-class guessing strategy.
+  - **Directional Accuracy**: Out-of-sample classification rate:
+    $$\text{Accuracy} = \frac{\text{TP} + \text{TN}}{\text{TP} + \text{TN} + \text{FP} + \text{FN}}$$
+  - **Area Under the ROC Curve (AUC-ROC)**: Evaluates classification threshold independence and true ranking ability:
+    $$\text{AUC-ROC} = \int_0^1 \text{TPR}(\text{FPR}^{-1}(t)) \, dt = P(\hat{p}_{\text{high}} > \hat{p}_{\text{low}})$$
+    Scores $> 0.50$ confirm that model-assigned probabilities accurately discriminate between future high- and low-volatility regimes across all classification thresholds.
+  - **Lift vs. Baseline**:
+    $$\text{Lift} = \text{Accuracy} - \max(P(Y=1), P(Y=0))$$
+    Quantifies genuine predictive edge above a naive majority-class guessing strategy.
   - Full Confusion Matrix, Precision, Recall, and F1-score across both volatility regimes.
   - Gini feature importance ranking revealing the strongest predictors of volatility transitions.
 
@@ -164,7 +171,7 @@ The first principal component accounts for $\approx 70\text{--}85\%$ of common v
 | **EGARCH Asymmetry ($\gamma$)** | **-0.082*** ($p < 0.001$) | Statistically significant leverage effect: market declines trigger higher volatility than advances |
 | **Sentiment Elasticity ($\delta$)** | **0.034** ($p < 0.05$) | Negative/anxious sentiment significantly elevates conditional variance |
 | **Granger Causality ($S \to \sigma$)** | **Significant at Lags 1–3** ($p < 0.01$) | Past investor sentiment contains predictive information for future volatility |
-| **ML Directional Accuracy** | **~62–68%** | Robust predictive power with **+12% to +18% lift** over naive baseline |
+| **ML Directional Accuracy & AUC-ROC** | **~62–68% Accuracy (AUC ~0.65–0.72)** | Robust predictive power with **+12% to +18% lift** over naive baseline |
 
 ---
 

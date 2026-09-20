@@ -83,3 +83,53 @@ def test_news_sentiment_pipeline_all_sources_fail():
         assert series is None
         assert source == "None"
         assert "Mock RSS error" in err
+
+
+def test_gdelt_sentiment_with_mocked_api():
+    """Verify GDELT parsing, tone filtering, and resampling with mocked HTTP responses."""
+    mock_articles = [
+        {"tone": f"{-i:.1f},1,2,3", "seendate": f"202301{i:02d}T120000Z"}
+        for i in range(1, 15)
+    ]
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"articles": mock_articles}
+
+    if hasattr(load_gdelt_sentiment, "clear"):
+        load_gdelt_sentiment.clear()
+
+    with patch("core.requests.get", return_value=mock_resp):
+        df, err = load_gdelt_sentiment("2023-01-01", "2023-01-31", fast_mode=True)
+        assert err is None
+        assert df is not None
+        assert "sentiment" in df.columns
+        assert len(df) > 5
+
+
+def test_load_trends_data_with_mocked_pytrends():
+    """Verify Google Trends payload creation and column filtering with mocked pytrends."""
+    dates = pd.date_range("2023-01-01", periods=10, freq="W")
+    mock_trends = pd.DataFrame(
+        {
+            "stock market crash": [10, 15, 20, 18, 12, 14, 16, 25, 30, 22],
+            "Nifty crash": [5, 8, 12, 10, 6, 7, 9, 15, 18, 11],
+            "Sensex fall": [8, 12, 16, 14, 9, 10, 11, 20, 24, 15],
+            "isPartial": [False] * 10,
+        },
+        index=dates,
+    )
+    if hasattr(load_trends_data, "clear"):
+        load_trends_data.clear()
+
+    with patch("core.TrendReq") as mock_trendreq_cls:
+        mock_instance = MagicMock()
+        mock_instance.interest_over_time.return_value = mock_trends
+        mock_trendreq_cls.return_value = mock_instance
+
+        df, keywords, err = load_trends_data("2023-01-01", "2023-03-01")
+        assert err is None
+        assert df is not None
+        assert len(keywords) == 3
+        assert "isPartial" not in df.columns
+
+

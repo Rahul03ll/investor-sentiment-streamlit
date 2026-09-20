@@ -5,7 +5,13 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
 
 from core import safe_trend_fit
 
@@ -78,9 +84,6 @@ def test_ml_pipeline_mechanics():
     df["sent_ma5"] = df["sentiment_index"].rolling(5).mean()
     df["vol_change"] = df["volatility"].pct_change()
 
-    # Target: next-day volatility above historical median
-    df["vol_class"] = (df["volatility"].shift(-1) > df["volatility"].median()).astype(int)
-
     feature_cols = [
         "returns",
         "sentiment_index",
@@ -98,6 +101,11 @@ def test_ml_pipeline_mechanics():
         "sent_ma5",
         "vol_change",
     ]
+
+    # Target: next-day volatility above training baseline median (leak-free)
+    split_approx = int(len(df) * 0.8)
+    vol_thresh = df["volatility"].iloc[:split_approx].median()
+    df["vol_class"] = (df["volatility"].shift(-1) > vol_thresh).astype(int)
 
     clean_df = df[feature_cols + ["vol_class"]].dropna()
     assert len(clean_df) > 100
@@ -119,5 +127,31 @@ def test_ml_pipeline_mechanics():
     acc = accuracy_score(y_test, preds)
     assert 0.0 <= acc <= 1.0
 
-    cm = confusion_matrix(y_test, preds)
+    probs = rf.predict_proba(X_test)[:, 1]
+    if len(np.unique(y_test)) > 1:
+        roc_auc = roc_auc_score(y_test, probs)
+        assert 0.0 <= roc_auc <= 1.0
+
+    cm = confusion_matrix(y_test, preds, labels=[0, 1])
     assert cm.shape == (2, 2)
+
+
+def test_ml_pipeline_single_class_robustness():
+    """Verify confusion matrix and classification report do not crash on single-class data."""
+    y_true_single = np.array([0, 0, 0, 0, 0])
+    y_pred_single = np.array([0, 0, 0, 0, 1])
+
+    cm = confusion_matrix(y_true_single, y_pred_single, labels=[0, 1])
+    assert cm.shape == (2, 2)
+
+    rep = classification_report(
+        y_true_single,
+        y_pred_single,
+        labels=[0, 1],
+        target_names=["Low Volatility", "High Volatility"],
+        output_dict=True,
+        zero_division=0,
+    )
+    assert "Low Volatility" in rep
+    assert "High Volatility" in rep
+

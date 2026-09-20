@@ -142,3 +142,44 @@ def test_fit_model_comparison_structure():
     assert set(cmp_df["Model"]).issubset({"GARCH(1,1)", "GJR-GARCH(1,1)", "EGARCH(1,1)"})
     assert "✅" in cmp_df["Best AIC"].values
     assert "✅" in cmp_df["Best BIC"].values
+
+
+def test_fit_egarch_model_estimates_asymmetry_and_sentiment():
+    """Verify EGARCH(1,1) estimates asymmetric leverage (gamma) and exogenous sentiment (x0)."""
+    rng = np.random.default_rng(42)
+    returns = rng.normal(0, 0.015, 300)
+    sentiment = rng.normal(0, 1.0, 300)
+
+    res = fit_egarch_model(returns, sentiment, p=1, q=1, o=1)
+    assert res is not None
+    assert hasattr(res, "params")
+    param_names = res.params.index.tolist()
+    assert "gamma[1]" in param_names
+    assert "alpha[1]" in param_names
+    assert "beta[1]" in param_names
+    assert "x0" in param_names
+
+
+def test_fit_egarch_model_supports_none_sentiment():
+    """Verify fit_egarch_model works when sentiment is None (pure EGARCH)."""
+    rng = np.random.default_rng(42)
+    returns = rng.normal(0, 0.015, 200)
+
+    res = fit_egarch_model(returns, None, p=1, q=1, o=1)
+    assert res is not None
+    assert hasattr(res, "params")
+    param_names = res.params.index.tolist()
+    assert "gamma[1]" in param_names
+
+
+def test_load_stock_data_missing_close_raises():
+    """Verify load_stock_data raises ValueError if Close column is missing."""
+    dates = pd.date_range("2023-01-01", periods=5, freq="D")
+    df_no_close = pd.DataFrame({"Open": [100.0] * 5, "Volume": [1000] * 5}, index=dates)
+    if hasattr(load_stock_data, "clear"):
+        load_stock_data.clear()
+    with patch("yfinance.download", return_value=df_no_close):
+        with pytest.raises(ValueError, match="does not contain 'Close' price"):
+            load_stock_data("NO_CLOSE_TICKER", "2023-01-01", "2023-01-05")
+
+

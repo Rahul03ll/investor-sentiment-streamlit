@@ -2,6 +2,7 @@
 # core.py — Data loading, sentiment pipeline, model fitting
 # ============================================================
 
+import calendar
 import time
 from datetime import datetime
 
@@ -111,6 +112,8 @@ def load_stock_data(ticker: str, start: str, end: str) -> pd.DataFrame:
             df.columns = df.columns.get_level_values(1)
         else:
             df.columns = [col[0] for col in df.columns]
+    if "Close" not in df.columns:
+        raise ValueError(f"Downloaded data for '{ticker}' does not contain 'Close' price.")
     close_series = df["Close"]
     if isinstance(close_series, pd.DataFrame):
         close_series = close_series.iloc[:, 0]
@@ -165,16 +168,17 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
         for i, month in enumerate(months):
             # Rotate through queries to get better coverage
             query = queries[i % len(queries)]
+            last_day = calendar.monthrange(month.year, month.month)[1]
+            m_start_day = start_dt.day if (month.year == start_dt.year and month.month == start_dt.month) else 1
+            m_end_day = end_dt.day if (month.year == end_dt.year and month.month == end_dt.month) else last_day
             
             params = {
                 "query": query,
                 "mode": "ArtList",
                 "maxrecords": "75",  # Increased from 50
                 "format": "json",
-                "startdatetime": month.strftime("%Y%m%d000000"),
-                "enddatetime": month.replace(
-                    day=28 if month.month == 2 else 30
-                ).strftime("%Y%m%d235959"),
+                "startdatetime": month.replace(day=m_start_day).strftime("%Y%m%d000000"),
+                "enddatetime": month.replace(day=m_end_day).strftime("%Y%m%d235959"),
             }
             
             try:
@@ -418,46 +422,80 @@ def news_sentiment_pipeline(api_key=None):
 # ╚══════════════════════════════════════════════════════════╝
 
 @st.cache_data(ttl=1800)
-def fit_egarch_model(returns_array: np.ndarray, sentiment_array: np.ndarray,
-                     p: int, q: int):
+def fit_egarch_model(returns_array: np.ndarray, sentiment_array: np.ndarray = None,
+                     p: int = 1, q: int = 1, o: int = 1):
     """
-    Fit EGARCH(p,q) with sentiment as external regressor.
-    Handles alignment, NaN sanitisation, and minimum-length guard.
+    Fit asymmetric EGARCH(p,o,q) with sentiment as external regressor in mean equation.
+    Handles alignment, NaN sanitisation, asymmetric order o, and minimum-length guard.
     """
     from arch import arch_model
 
     returns_pct = np.asarray(returns_array, dtype=float) * 100
-    sentiment   = np.asarray(sentiment_array, dtype=float)
-
-    # Align lengths
-    n = min(len(returns_pct), len(sentiment))
-    returns_pct = returns_pct[:n]
-    sentiment   = sentiment[:n]
-
-    if n < 100:
-        raise ValueError(
-            f"Only {n} observations after alignment — need ≥100. "
-            "Check that sentiment covers the selected date range."
-        )
 
     # Sanitise returns
     if not np.isfinite(returns_pct).all():
         raise ValueError("Returns contain NaN/inf.")
 
-    # Sanitise sentiment: replace NaN/inf with column mean
-    bad = ~np.isfinite(sentiment)
-    if bad.any():
-        sentiment[bad] = np.nanmean(sentiment[~bad]) if (~bad).any() else 0.0
+    if sentiment_array is not None and len(sentiment_array) > 0:
+        sentiment = np.asarray(sentiment_array, dtype=float)
 
-    # If sentiment is constant (e.g. all-zeros from demo), add tiny jitter
-    # so arch doesn't produce a degenerate model
-    if np.std(sentiment) < 1e-10:
-        rng = np.random.default_rng(42)
-        sentiment = sentiment + rng.normal(0, 1e-6, n)
+        # Align lengths
+        n = min(len(returns_pct), len(sentiment))
+        returns_pct = returns_pct[:n]
+        sentiment   = sentiment[:n]
 
-    model = arch_model(returns_pct, vol="EGARCH", p=p, q=q,
-                       x=sentiment.reshape(-1, 1))
-    return model.fit(disp="off", show_warning=False)
+        if n < 100:
+            raise ValueError(
+                f"Only {n} observations after alignment — need ≥100. "
+                "Check that sentiment covers the selected date range."
+            )
+
+        # Sanitise sentiment: replace NaN/inf with column mean
+        bad = ~np.isfinite(sentiment)
+        if bad.any():
+            sentiment[bad] = np.nanmean(sentiment[~bad]) if (~bad).any() else 0.0
+
+        # If sentiment is constant (e.g. all-zeros from demo), add tiny jitter
+        # so arch doesn't produce a degenerate model
+        if np.std(sentiment) < 1e-10:
+            rng = np.random.default_rng(42)
+            sentiment = sentiment + rng.normal(0, 1e-6, n)
+
+        try:
+            model = arch_model(
+                returns_pct,
+                x=sentiment.reshape(-1, 1),
+                mean="ARX",
+                lags=0,
+                vol="EGARCH",
+                p=p,
+                o=o,
+                q=q,
+            )
+            return model.fit(disp="off", show_warning=False)
+        except Exception:
+            model = arch_model(
+                returns_pct,
+                mean="Constant",
+                vol="EGARCH",
+                p=p,
+                o=o,
+                q=q,
+            )
+            return model.fit(disp="off", show_warning=False)
+    else:
+        n = len(returns_pct)
+        if n < 100:
+            raise ValueError(f"Only {n} observations — need ≥100.")
+        model = arch_model(
+            returns_pct,
+            mean="Constant",
+            vol="EGARCH",
+            p=p,
+            o=o,
+            q=q,
+        )
+        return model.fit(disp="off", show_warning=False)
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -477,7 +515,7 @@ def fit_model_comparison(returns_array: np.ndarray) -> pd.DataFrame:
     specs = {
         "GARCH(1,1)":     arch_model(rp, vol="Garch",  p=1,      q=1),
         "GJR-GARCH(1,1)": arch_model(rp, vol="Garch",  p=1, o=1, q=1),
-        "EGARCH(1,1)":    arch_model(rp, vol="EGARCH", p=1,      q=1),
+        "EGARCH(1,1)":    arch_model(rp, vol="EGARCH", p=1, o=1, q=1),
     }
     rows = []
     for name, spec in specs.items():
