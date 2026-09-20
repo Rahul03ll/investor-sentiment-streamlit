@@ -34,11 +34,64 @@ except ImportError:
 
 def _add_jitter(series: pd.Series, seed: int = 0) -> pd.Series:
     """Add tiny noise so a near-constant series has variance for ADF/Granger."""
+    if len(series) == 0:
+        return series
     rng = np.random.default_rng(seed)
     std = series.std()
     if std == 0 or not np.isfinite(std):
         std = 1e-4
     return series + rng.normal(0, std * 1e-6, len(series))
+
+
+def apply_plot_theme(fig, axes, is_dark_mode: bool = False):
+    """Consistent chart theme for light/dark modes."""
+    if isinstance(axes, np.ndarray):
+        axes_list = axes.flatten().tolist()
+    elif isinstance(axes, list):
+        axes_list = axes
+    else:
+        axes_list = [axes]
+
+    if is_dark_mode:
+        fig.patch.set_facecolor("#0f172a")
+        for ax in axes_list:
+            ax.set_facecolor("#111827")
+            ax.tick_params(colors="#e5e7eb")
+            ax.xaxis.label.set_color("#e5e7eb")
+            ax.yaxis.label.set_color("#e5e7eb")
+            ax.title.set_color("#f8fafc")
+            for spine in ax.spines.values():
+                spine.set_color("#64748b")
+            ax.grid(True, alpha=0.18, color="#64748b")
+    else:
+        fig.patch.set_facecolor("white")
+        for ax in axes_list:
+            ax.set_facecolor("#f8fafc")
+            ax.tick_params(colors="#1f2937")
+            ax.xaxis.label.set_color("#111827")
+            ax.yaxis.label.set_color("#111827")
+            ax.title.set_color("#0f172a")
+            for spine in ax.spines.values():
+                spine.set_color("#9ca3af")
+            ax.grid(True, alpha=0.18, color="#94a3b8")
+    fig.tight_layout()
+
+
+def safe_trend_fit(x: pd.Series, y: pd.Series):
+    """Linear trend fit with NaN/inf/degenerate-data safety."""
+    df = pd.DataFrame({"x": x, "y": y}).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(df) <= 2 or df["x"].nunique() <= 1 or df["y"].nunique() <= 1:
+        return None, None
+    try:
+        z = np.polyfit(df["x"], df["y"], 1, rcond=1e-10)
+        return np.poly1d(z), float(z[0])
+    except np.linalg.LinAlgError:
+        try:
+            from scipy.stats import linregress
+            slope, intercept, *_ = linregress(df["x"], df["y"])
+            return np.poly1d([slope, intercept]), float(slope)
+        except Exception:
+            return None, None
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -52,9 +105,18 @@ def load_stock_data(ticker: str, start: str, end: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No data for '{ticker}' between {start} and {end}.")
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df["returns"] = np.log(df["Close"] / df["Close"].shift(1))
+        if "Close" in df.columns.get_level_values(0):
+            df.columns = df.columns.get_level_values(0)
+        elif "Close" in df.columns.get_level_values(1):
+            df.columns = df.columns.get_level_values(1)
+        else:
+            df.columns = [col[0] for col in df.columns]
+    close_series = df["Close"]
+    if isinstance(close_series, pd.DataFrame):
+        close_series = close_series.iloc[:, 0]
+    df["returns"] = np.log(close_series / close_series.shift(1))
     return df.dropna(subset=["returns"])
+
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -128,8 +190,8 @@ def load_gdelt_sentiment(start: str, end: str, fast_mode: bool = True):
                         if tone_str and len(date_str) == 8:
                             try:
                                 tone_val = float(tone_str.split(",")[0])
-                                # Filter extreme outliers (GDELT can have bad data)
-                                if -10 <= tone_val <= 10:
+                                # Filter extreme outliers while retaining acute crisis sentiment
+                                if -50 <= tone_val <= 50:
                                     records.append({
                                         "date": datetime.strptime(date_str, "%Y%m%d"),
                                         "tone": tone_val,
@@ -408,6 +470,10 @@ def fit_model_comparison(returns_array: np.ndarray) -> pd.DataFrame:
     from arch import arch_model
 
     rp = np.asarray(returns_array, dtype=float) * 100
+    rp = rp[np.isfinite(rp)]
+    if len(rp) < 100:
+        return pd.DataFrame()
+
     specs = {
         "GARCH(1,1)":     arch_model(rp, vol="Garch",  p=1,      q=1),
         "GJR-GARCH(1,1)": arch_model(rp, vol="Garch",  p=1, o=1, q=1),

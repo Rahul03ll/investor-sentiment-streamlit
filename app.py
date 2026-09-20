@@ -22,12 +22,14 @@ from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.stattools import adfuller, grangercausalitytests
 
 from core import (
+    apply_plot_theme as _core_apply_plot_theme,
     fit_egarch_model,
     fit_model_comparison,
     load_gdelt_sentiment,
     load_stock_data,
     load_trends_data,
     news_sentiment_pipeline,
+    safe_trend_fit,
 )
 
 # ── Page Config ───────────────────────────────────────────
@@ -94,54 +96,9 @@ st.markdown("""
 # ── Helpers ───────────────────────────────────────────────
 
 def apply_plot_theme(fig, axes):
-    """Consistent chart theme for light/dark modes."""
-    if isinstance(axes, np.ndarray):
-        axes_list = axes.flatten().tolist()
-    elif isinstance(axes, list):
-        axes_list = axes
-    else:
-        axes_list = [axes]
+    """Consistent chart theme for light/dark modes using core theme logic."""
+    _core_apply_plot_theme(fig, axes, is_dark_mode=IS_DARK_MODE)
 
-    if IS_DARK_MODE:
-        fig.patch.set_facecolor("#0f172a")
-        for ax in axes_list:
-            ax.set_facecolor("#111827")
-            ax.tick_params(colors="#e5e7eb")
-            ax.xaxis.label.set_color("#e5e7eb")
-            ax.yaxis.label.set_color("#e5e7eb")
-            ax.title.set_color("#f8fafc")
-            for spine in ax.spines.values():
-                spine.set_color("#64748b")
-            ax.grid(True, alpha=0.18, color="#64748b")
-    else:
-        fig.patch.set_facecolor("white")
-        for ax in axes_list:
-            ax.set_facecolor("#f8fafc")
-            ax.tick_params(colors="#1f2937")
-            ax.xaxis.label.set_color("#111827")
-            ax.yaxis.label.set_color("#111827")
-            ax.title.set_color("#0f172a")
-            for spine in ax.spines.values():
-                spine.set_color("#9ca3af")
-            ax.grid(True, alpha=0.18, color="#94a3b8")
-    fig.tight_layout()
-
-
-def safe_trend_fit(x: pd.Series, y: pd.Series):
-    """Linear trend fit with NaN/inf/degenerate-data safety."""
-    df = pd.DataFrame({"x": x, "y": y}).replace([np.inf, -np.inf], np.nan).dropna()
-    if len(df) <= 2 or df["x"].nunique() <= 1 or df["y"].nunique() <= 1:
-        return None, None
-    try:
-        z = np.polyfit(df["x"], df["y"], 1, rcond=1e-10)
-        return np.poly1d(z), float(z[0])
-    except np.linalg.LinAlgError:
-        try:
-            from scipy.stats import linregress
-            slope, intercept, *_ = linregress(df["x"], df["y"])
-            return np.poly1d([slope, intercept]), float(slope)
-        except Exception:
-            return None, None
 
 
 # ── Header ────────────────────────────────────────────────

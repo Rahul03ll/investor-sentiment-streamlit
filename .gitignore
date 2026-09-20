@@ -40,3 +40,15 @@ Thumbs.db
 
 # Python version
 .python-version
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Additional tool caches
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
